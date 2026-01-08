@@ -102,14 +102,39 @@ class CustomNegotiator(LLMNegotiator):
     def format_outcome_space(self, state):
         # Customize how the outcome space is described
         return "Custom outcome space description..."
-    
+
     def format_own_ufun(self, state):
         # Customize how your utility function is described
         return "Custom utility function description..."
-    
+
     def format_state(self, state, offer=None):
         # Customize how the negotiation state is presented
         return "Custom state description..."
+```
+
+For complete control over the prompts, override `build_system_prompt` or `build_user_message`:
+
+```python
+from negmas_llm import LLMNegotiator
+
+class CustomPromptNegotiator(LLMNegotiator):
+    def build_system_prompt(self, state):
+        # Complete control over the system prompt
+        # By default, this combines: format_outcome_space(), format_nmi_info(),
+        # format_own_ufun(), format_partner_ufun(), format_response_instructions()
+        return f"""You are an aggressive negotiator who never accepts the first offer.
+
+{self.format_outcome_space(state)}
+{self.format_own_ufun(state)}
+{self.format_response_instructions()}
+
+Always aim for at least 80% of your maximum utility."""
+
+    def build_user_message(self, state, offer, source):
+        # Complete control over the per-round user message
+        if offer is not None:
+            return f"Round {state.step}: Opponent offered {offer}. Counter aggressively."
+        return f"Round {state.step}: Make an ambitious opening offer."
 ```
 
 ## Documentation
