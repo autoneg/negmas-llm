@@ -143,7 +143,7 @@ Full documentation is available at [negmas-llm.readthedocs.io](https://negmas-ll
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+GNU Affero General Public License v3.0 or later - see [LICENSE](LICENSE) for details.
 
 ## Related Projects
 
