@@ -12,3 +12,6 @@ wheels/
 # Agent files
 AGENTS.md
 coding_agents/
+
+# Documentation build
+site/
