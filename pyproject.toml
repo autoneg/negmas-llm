@@ -1,0 +1,49 @@
+[project]
+name = "negmas-llm"
+version = "0.1.0"
+description = "LLM-based negotiators for the negmas negotiation framework"
+readme = "README.md"
+authors = [
+    { name = "Yasser Mohammad", email = "yasserfarouk@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "litellm>=1.80.11",
+    "negmas>=0.11.3",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.5,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["litellm.*", "negmas.*"]
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.15.0",
+    "pytest>=9.0.2",
+    "ruff>=0.11.12",
+]
+docs = [
+    "mkdocs-material>=9.6.14",
+    "mkdocstrings[python]>=0.29.1",
+]

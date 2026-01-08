@@ -1,0 +1,80 @@
+site_name: negmas-llm
+site_description: LLM-based negotiators for the negmas negotiation framework
+site_author: Yasser Mohammad
+site_url: https://negmas-llm.readthedocs.io/
+
+repo_name: yasserfarouk/negmas-llm
+repo_url: https://github.com/yasserfarouk/negmas-llm
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            docstring_style: google
+            show_source: true
+            show_root_heading: true
+            show_category_heading: true
+            members_order: source
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - admonition
+  - pymdownx.details
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: getting-started/installation.md
+    - Quick Start: getting-started/quickstart.md
+  - User Guide:
+    - Overview: guide/overview.md
+    - Providers: guide/providers.md
+    - Customization: guide/customization.md
+  - API Reference:
+    - Negotiators: api/negotiators.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/yasserfarouk/negmas-llm
