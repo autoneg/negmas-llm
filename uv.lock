@@ -1778,6 +1778,11 @@ dependencies = [
     { name = "negmas" },
 ]
 
+[package.optional-dependencies]
+dev = [
+    { name = "pre-commit" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "mypy" },
@@ -1794,7 +1799,9 @@ docs = [
 requires-dist = [
     { name = "litellm", specifier = ">=1.80.11" },
     { name = "negmas", specifier = ">=0.11.3" },
+    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.5.1" },
 ]
+provides-extras = ["dev"]
 
 [package.metadata.requires-dev]
 dev = [
