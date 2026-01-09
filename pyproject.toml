@@ -1,6 +1,6 @@
 [project]
 name = "negmas-llm"
-version = "0.1.0"
+version = "0.1.1"
 description = "LLM-based negotiators for the negmas negotiation framework"
 readme = "README.md"
 license = "AGPL-3.0-or-later"
@@ -8,10 +8,29 @@ authors = [
     { name = "Yasser Mohammad", email = "yasserfarouk@gmail.com" }
 ]
 requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+keywords = ["negotiation", "llm", "agents", "ai", "negmas"]
 dependencies = [
     "litellm>=1.80.11",
     "negmas>=0.11.3",
 ]
+
+[project.urls]
+Homepage = "https://github.com/autoneg/negmas-llm"
+Documentation = "https://negmas-llm.readthedocs.io"
+Repository = "https://github.com/autoneg/negmas-llm"
+Issues = "https://github.com/autoneg/negmas-llm/issues"
 
 [project.optional-dependencies]
 dev = [
