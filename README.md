@@ -2,9 +2,14 @@
 
 LLM-based negotiators for the [negmas](https://github.com/yasserfarouk/negmas) negotiation framework.
 
-[![Documentation Status](https://readthedocs.org/projects/negmas-llm/badge/?version=latest)](https://negmas-llm.readthedocs.io/en/latest/?badge=latest)
-[![PyPI version](https://badge.fury.io/py/negmas-llm.svg)](https://badge.fury.io/py/negmas-llm)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![PyPI](https://img.shields.io/pypi/v/negmas-llm.svg)](https://pypi.org/project/negmas-llm/)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/negmas-llm.svg)](https://pypi.org/project/negmas-llm/)
+[![PyPI - Status](https://img.shields.io/pypi/status/negmas-llm.svg)](https://pypi.org/project/negmas-llm/)
+[![PyPI - Downloads](https://img.shields.io/pypi/dm/negmas-llm.svg)](https://pypi.org/project/negmas-llm/)
+[![PyPI - License](https://img.shields.io/pypi/l/negmas-llm.svg)](https://pypi.org/project/negmas-llm/)
+[![Documentation Status](https://readthedocs.org/projects/negmas-llm/badge/?version=latest)](https://negmas-llm.readthedocs.io/en/latest/)
+[![CI](https://github.com/autoneg/negmas-llm/workflows/CI/badge.svg)](https://github.com/autoneg/negmas-llm/actions)
+[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 
 ## Overview
 
@@ -139,7 +144,7 @@ Always aim for at least 80% of your maximum utility."""
 
 ## Documentation
 
-Full documentation is available at [negmas-llm.readthedocs.io](https://negmas-llm.readthedocs.io/).
+Full documentation is available at [negmas-llm.readthedocs.io](https://negmas-llm.readthedocs.io/en/latest/).
 
 ## License
 
