@@ -13,5 +13,8 @@ wheels/
 AGENTS.md
 coding_agents/
 
+# Local development overrides
+pyproject.local.toml
+
 # Documentation build
 site/
