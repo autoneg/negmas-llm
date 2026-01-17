@@ -1,6 +1,6 @@
 [project]
 name = "negmas-llm"
-version = "0.2.1"
+version = "0.2.2"
 description = "LLM-based negotiators for the negmas negotiation framework"
 readme = "README.md"
 license = "AGPL-3.0-or-later"
@@ -24,7 +24,7 @@ classifiers = [
 keywords = ["negotiation", "llm", "agents", "ai", "negmas"]
 dependencies = [
     "litellm>=1.80.11",
-    "negmas>=0.11.3",
+    "negmas>=0.14.0",
 ]
 
 [project.urls]
