@@ -61,6 +61,16 @@ select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
 [tool.pytest.ini_options]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "ollama: tests requiring Ollama (local LLM server)",
+    "openai: tests requiring OpenAI API access",
+    "anthropic: tests requiring Anthropic API access",
+    "gemini: tests requiring Google Gemini API access",
+    "copilot: tests requiring GitHub Copilot API access",
+    "groq: tests requiring Groq API access",
+    "mistral: tests requiring Mistral API access",
+    "deepseek: tests requiring DeepSeek API access",
+    "openrouter: tests requiring OpenRouter API access",
+    "provider: tests for a specific LLM provider",
 ]
 
 [dependency-groups]
