@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import textwrap
 from typing import TYPE_CHECKING, Any, cast
 
 import litellm
@@ -61,6 +62,13 @@ __all__ = [
     "LLMLimitedOutcomesAcceptor",
     "LLMHybridNegotiator",
 ]
+
+
+def _dedent(text: str) -> str:
+    """Dedent a multi-line string, stripping the first line if empty."""
+    if text.startswith("\n"):
+        text = text[1:]
+    return textwrap.dedent(text)
 
 
 def is_meta_negotiator_available() -> bool:
@@ -302,26 +310,28 @@ class LLMMetaNegotiator(_BaseClass):  # type: ignore[valid-type, misc]
         if self._custom_system_prompt:
             return self._custom_system_prompt
 
-        return """\
-You are assisting a negotiator by generating persuasive text to accompany offers.
+        return _dedent("""
+            You are assisting a negotiator by generating persuasive text to
+            accompany offers.
 
-Your role is to:
-1. Generate natural, persuasive messages that explain or justify the offer
-2. Consider any messages received from the other party
-3. Build rapport while advancing the negotiation
-4. Keep messages concise but impactful
+            Your role is to:
+            1. Generate natural, persuasive messages that explain or justify the offer
+            2. Consider any messages received from the other party
+            3. Build rapport while advancing the negotiation
+            4. Keep messages concise but impactful
 
-You will receive:
-- The offer being made (or acceptance/rejection decision)
-- Any text received from the other party in their last offer
-- Context about the negotiation state
+            You will receive:
+            - The offer being made (or acceptance/rejection decision)
+            - Any text received from the other party in their last offer
+            - Context about the negotiation state
 
-Respond with ONLY a JSON object:
-{
-    "text": "Your message to accompany the offer"
-}
+            Respond with ONLY a JSON object:
+            {
+                "text": "Your message to accompany the offer"
+            }
 
-Keep messages brief (1-3 sentences) and professional."""
+            Keep messages brief (1-3 sentences) and professional.
+            """)
 
     def _build_user_message(
         self,
