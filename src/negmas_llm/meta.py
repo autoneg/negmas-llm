@@ -10,7 +10,7 @@ import litellm
 from litellm import ModelResponse
 from negmas.gb.common import ExtendedResponseType
 from negmas.outcomes import ExtendedOutcome, Outcome
-from negmas.sao import ResponseType, SAOState
+from negmas.sao import ResponseType, SAONegotiator, SAOState
 
 # SAOMetaNegotiator is available in negmas >= 0.16.0 (not yet released)
 # We provide a helpful error message if it's not available
@@ -32,7 +32,6 @@ except ImportError:
 
 if TYPE_CHECKING:
     from litellm.types.utils import Choices
-    from negmas.sao import SAONegotiator
 
 __all__ = [
     "LLMMetaNegotiator",
@@ -83,7 +82,7 @@ def _check_availability() -> None:
 # Use object as a placeholder base class when SAOMetaNegotiator is unavailable
 # The __init__ will raise an informative error
 _BaseClass = (  # type: ignore[assignment, misc]
-    SAOMetaNegotiator if _SAO_META_NEGOTIATOR_AVAILABLE else object
+    SAOMetaNegotiator if _SAO_META_NEGOTIATOR_AVAILABLE else SAONegotiator
 )
 
 
