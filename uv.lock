@@ -1725,7 +1725,7 @@ wheels = [
 
 [[package]]
 name = "negmas"
-version = "0.14.0"
+version = "0.15.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
@@ -1737,6 +1737,7 @@ dependencies = [
     { name = "gif" },
     { name = "inflect" },
     { name = "kaleido" },
+    { name = "matplotlib" },
     { name = "networkx" },
     { name = "numpy" },
     { name = "pandas" },
@@ -1755,9 +1756,9 @@ dependencies = [
     { name = "typer" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bf/d7/018741957fa6a11fbd36c86ad52aaa189c5ea8c0295d04c2bf8baa824302/negmas-0.14.0.tar.gz", hash = "sha256:b9b052f57d951e7719a1b582912437f0309360cd7592be7a141d61638e1ed297", size = 652898, upload-time = "2026-01-17T05:07:50.729Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d4/2c/29a8ad420bb00f818cf6578565b365ab806a4bbb4c833ac015e1bcc89e5a/negmas-0.15.0.tar.gz", hash = "sha256:fbbb4e04a3a83fba932889d32fea3ebbab8090d67e3899fb01488be31da22e6d", size = 739666, upload-time = "2026-02-03T10:22:13.945Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e7/d6/3fbfe88543ec0b4287a47d64be4a7cb9f5283e7fca45ecc549991e689625/negmas-0.14.0-py3-none-any.whl", hash = "sha256:9a40379d47bb3088c2eb23a30989944412a839c607698484649e125a50982794", size = 731612, upload-time = "2026-01-17T05:07:48.746Z" },
+    { url = "https://files.pythonhosted.org/packages/12/3c/d6c6fecc80aac34cba08feabb57126f4bfa2967be3cff8bce242532c5c47/negmas-0.15.0-py3-none-any.whl", hash = "sha256:8d430dd2fd984b31240f80cbaf0dd846e2991e1e3a50f374cc159e9f86644179", size = 815612, upload-time = "2026-02-03T10:22:12.452Z" },
 ]
 
 [[package]]

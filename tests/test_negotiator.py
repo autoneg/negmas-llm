@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 from negmas import make_issue, make_os
 from negmas.preferences import LinearAdditiveUtilityFunction as LUFun
@@ -9,8 +11,8 @@ from negmas.sao import AspirationNegotiator, SAOMechanism
 
 from negmas_llm import OllamaNegotiator
 
-# Use qwen3:1.7b as specified - a small, fast model for testing
-OLLAMA_MODEL = "qwen3:1.7b"
+# Use environment variable for model, defaulting to qwen3:0.6b (small/fast)
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:0.6b")
 
 
 @pytest.fixture
