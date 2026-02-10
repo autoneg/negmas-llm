@@ -63,6 +63,15 @@ from negmas_llm.negotiator import (
     TogetherAINegotiator,
     VLLMNegotiator,
 )
+from negmas_llm.tags import (
+    Tag,
+    TagContext,
+    TagFormat,
+    TagHandler,
+    get_tag_handler,
+    process_prompt,
+    register_tag_handler,
+)
 
 # =============================================================================
 # Register negotiators with negmas registry
@@ -473,4 +482,12 @@ __all__ = [
     "OllamaOfferingPolicy",
     "AnthropicAcceptancePolicy",
     "AnthropicOfferingPolicy",
+    # Tag processing
+    "Tag",
+    "TagFormat",
+    "TagContext",
+    "TagHandler",
+    "process_prompt",
+    "register_tag_handler",
+    "get_tag_handler",
 ]
