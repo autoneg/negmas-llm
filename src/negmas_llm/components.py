@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import textwrap
 from abc import ABC
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -20,9 +21,18 @@ from negmas.gb.components import AcceptancePolicy, GBComponent, OfferingPolicy
 from negmas.inout import serialize
 from negmas.outcomes import Outcome
 
+from negmas_llm.tags import process_prompt
+
 if TYPE_CHECKING:
     from litellm.types.utils import Choices
     from negmas.negotiators import Negotiator
+
+
+def _dedent(text: str) -> str:
+    """Dedent a multi-line string, stripping the first line if empty."""
+    if text.startswith("\n"):
+        text = text[1:]
+    return textwrap.dedent(text)
 
 
 # =============================================================================
@@ -67,11 +77,54 @@ class LLMComponentMixin(ABC):
         """Get the model string for litellm."""
         return f"{self.provider}/{self.model}"
 
-    def _call_llm(self, messages: list[dict[str, str]]) -> str:
-        """Call the LLM and get a response."""
+    def _process_prompt(
+        self,
+        prompt: str,
+        negotiator: Negotiator | None,
+        state: GBState | None = None,
+    ) -> str:
+        """Process a prompt, replacing all tags with their values.
+
+        Args:
+            prompt: The prompt string containing tags.
+            negotiator: The negotiator instance.
+            state: The current negotiation state.
+
+        Returns:
+            The processed prompt with tags replaced.
+        """
+        if negotiator is None:
+            return prompt
+        # Convert GBState to SAOState-like for process_prompt
+        return process_prompt(prompt, negotiator, state)  # type: ignore[arg-type]
+
+    def _call_llm(
+        self,
+        messages: list[dict[str, str]],
+        negotiator: Negotiator | None = None,
+        state: GBState | None = None,
+    ) -> str:
+        """Call the LLM and get a response.
+
+        All message contents are processed with process_prompt before sending.
+
+        Args:
+            messages: The conversation messages.
+            negotiator: The negotiator instance (for tag processing).
+            state: The current negotiation state (for tag processing).
+
+        Returns:
+            The LLM response text.
+        """
+        # Process all message contents with process_prompt
+        processed_messages = []
+        for msg in messages:
+            processed_content = self._process_prompt(msg["content"], negotiator, state)
+            processed_messages.append({**msg, "content": processed_content})
+
         kwargs: dict[str, Any] = {
             "model": self.get_model_string(),
-            "messages": messages,
+            "messages": processed_messages,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
             **self.llm_kwargs,
@@ -258,23 +311,25 @@ class LLMAcceptancePolicy(AcceptancePolicy, LLMComponentMixin):
 
     def format_response_instructions(self) -> str:
         """Format the response instructions for acceptance decisions."""
-        return """\
-## Response Format
+        return _dedent("""
+            ## Response Format
 
-IMPORTANT: Your response MUST be valid JSON in the following format:
-{
-    "decision": "accept" | "reject" | "end",
-    "reasoning": "brief explanation of your decision"
-}
+            IMPORTANT: Your response MUST be valid JSON in the following format:
+            {
+                "decision": "accept" | "reject" | "end",
+                "reasoning": "brief explanation of your decision"
+            }
 
-Where:
-- "decision": Your decision:
-  - "accept": Accept the current offer
-  - "reject": Reject the offer (a counter-offer will be generated separately)
-  - "end": End the negotiation without agreement
-- "reasoning": Brief explanation of why you made this decision
+            Where:
+            - "decision": Your decision:
+              - "accept": Accept the current offer
+              - "reject": Reject the offer (a counter-offer will be generated
+                separately)
+              - "end": End the negotiation without agreement
+            - "reasoning": Brief explanation of why you made this decision
 
-Always respond with ONLY the JSON object, no additional text."""
+            Always respond with ONLY the JSON object, no additional text.
+            """)
 
     def build_system_prompt(self, state: GBState) -> str:
         """Build the system prompt for acceptance decisions.
@@ -294,14 +349,15 @@ Always respond with ONLY the JSON object, no additional text."""
         own_ufun_info = self.format_own_ufun(self.negotiator)
         response_instructions = self.format_response_instructions()
 
-        return f"""\
-You are an acceptance policy in an automated negotiation.
-Your role is to decide whether to ACCEPT, REJECT, or END the negotiation
-based on offers received.
+        return _dedent(f"""
+            You are an acceptance policy in an automated negotiation.
+            Your role is to decide whether to ACCEPT, REJECT, or END the negotiation
+            based on offers received.
 
-{outcome_space_info}
-{own_ufun_info}
-{response_instructions}"""
+            {outcome_space_info}
+            {own_ufun_info}
+            {response_instructions}
+            """)
 
     def build_user_message(
         self,
@@ -378,7 +434,7 @@ based on offers received.
             {"role": "user", "content": user_message},
         ]
 
-        response_text = self._call_llm(messages)
+        response_text = self._call_llm(messages, self.negotiator, state)
 
         self._conversation_history.append({"role": "user", "content": user_message})
         self._conversation_history.append(
@@ -439,22 +495,24 @@ class LLMOfferingPolicy(OfferingPolicy, LLMComponentMixin):
 
     def format_response_instructions(self) -> str:
         """Format the response instructions for offer generation."""
-        return """\
-## Response Format
+        return _dedent("""
+            ## Response Format
 
-IMPORTANT: Your response MUST be valid JSON in the following format:
-{
-    "outcome": [value1, value2, ...],
-    "text": "optional message to accompany the offer",
-    "reasoning": "brief explanation of why you chose this offer"
-}
+            IMPORTANT: Your response MUST be valid JSON in the following format:
+            {
+                "outcome": [value1, value2, ...],
+                "text": "optional message to accompany the offer",
+                "reasoning": "brief explanation of why you chose this offer"
+            }
 
-Where:
-- "outcome": Your proposed offer as a list of values matching the issue order
-- "text": Optional text message to send with the offer
-- "reasoning": Brief explanation of your strategy
+            Where:
+            - "outcome": Your proposed offer as a list of values matching the
+              issue order
+            - "text": Optional text message to send with the offer
+            - "reasoning": Brief explanation of your strategy
 
-Always respond with ONLY the JSON object, no additional text."""
+            Always respond with ONLY the JSON object, no additional text.
+            """)
 
     def build_system_prompt(self, state: GBState) -> str:
         """Build the system prompt for offer generation.
@@ -474,14 +532,15 @@ Always respond with ONLY the JSON object, no additional text."""
         own_ufun_info = self.format_own_ufun(self.negotiator)
         response_instructions = self.format_response_instructions()
 
-        return f"""\
-You are an offering policy in an automated negotiation.
-Your role is to generate strategic offers that advance your interests
-while seeking mutually acceptable agreements.
+        return _dedent(f"""
+            You are an offering policy in an automated negotiation.
+            Your role is to generate strategic offers that advance your interests
+            while seeking mutually acceptable agreements.
 
-{outcome_space_info}
-{own_ufun_info}
-{response_instructions}"""
+            {outcome_space_info}
+            {own_ufun_info}
+            {response_instructions}
+            """)
 
     def build_user_message(self, state: GBState, dest: str | None) -> str:
         """Build the user message for offer generation.
@@ -549,7 +608,7 @@ while seeking mutually acceptable agreements.
             {"role": "user", "content": user_message},
         ]
 
-        response_text = self._call_llm(messages)
+        response_text = self._call_llm(messages, self.negotiator, state)
 
         self._conversation_history.append({"role": "user", "content": user_message})
         self._conversation_history.append(
@@ -618,17 +677,18 @@ class LLMNegotiationSupporter(GBComponent, LLMComponentMixin):
 
     def build_system_prompt(self) -> str:
         """Build the system prompt for text generation."""
-        return """\
-You are a skilled negotiation communicator. Your role is to generate
-persuasive, professional text to accompany negotiation actions.
+        return _dedent("""
+            You are a skilled negotiation communicator. Your role is to generate
+            persuasive, professional text to accompany negotiation actions.
 
-Your text should:
-- Be concise but compelling
-- Support the action being taken
-- Maintain a professional tone
-- Build rapport while advancing your position
+            Your text should:
+            - Be concise but compelling
+            - Support the action being taken
+            - Maintain a professional tone
+            - Build rapport while advancing your position
 
-Respond with ONLY the text message, no JSON or formatting."""
+            Respond with ONLY the text message, no JSON or formatting.
+            """)
 
     def generate_offer_text(
         self,
@@ -675,7 +735,7 @@ Relative time: {state.relative_time:.1%}
             {"role": "user", "content": user_message},
         ]
 
-        return self._call_llm(messages)
+        return self._call_llm(messages, self.negotiator, state)
 
     def generate_response_text(
         self,
@@ -725,7 +785,7 @@ Round: {state.step}
             {"role": "user", "content": user_message},
         ]
 
-        return self._call_llm(messages)
+        return self._call_llm(messages, self.negotiator, state)
 
     def after_proposing(
         self, state: GBState, offer: Outcome | None, dest: str | None = None
@@ -813,20 +873,21 @@ class LLMValidator(GBComponent, LLMComponentMixin):
 
     def build_validation_prompt(self) -> str:
         """Build the system prompt for validation."""
-        return """\
-You are a negotiation consistency validator. Your role is to check if
-text messages are consistent with negotiation actions.
+        return _dedent("""
+            You are a negotiation consistency validator. Your role is to check if
+            text messages are consistent with negotiation actions.
 
-Analyze whether the text accurately represents the action being taken.
-Report any inconsistencies found.
+            Analyze whether the text accurately represents the action being taken.
+            Report any inconsistencies found.
 
-Respond in JSON format:
-{
-    "consistent": true | false,
-    "issues": ["list of inconsistencies if any"],
-    "suggested_text": "corrected text if inconsistent (only if text needs correction)",
-    "suggested_action": "accept" | "reject" | "end" (only if action needs correction)
-}"""
+            Respond in JSON format:
+            {
+                "consistent": true | false,
+                "issues": ["list of inconsistencies if any"],
+                "suggested_text": "corrected text if inconsistent",
+                "suggested_action": "accept" | "reject" | "end"
+            }
+            """)
 
     def validate_response(
         self,
@@ -868,7 +929,7 @@ Is the text consistent with the action?"""
             {"role": "user", "content": user_message},
         ]
 
-        response_text = self._call_llm(messages)
+        response_text = self._call_llm(messages, self.negotiator)
 
         # Parse response
         json_match = re.search(r"\{[\s\S]*\}", response_text)
@@ -912,7 +973,7 @@ Is the text consistent with the offer being made?"""
             {"role": "user", "content": user_message},
         ]
 
-        response_text = self._call_llm(messages)
+        response_text = self._call_llm(messages, self.negotiator)
 
         # Parse response
         json_match = re.search(r"\{[\s\S]*\}", response_text)
@@ -951,7 +1012,7 @@ Respond with ONLY the corrected text, no formatting."""
             {"role": "user", "content": user_message},
         ]
 
-        return self._call_llm(messages)
+        return self._call_llm(messages, self.negotiator)
 
     def after_responding(
         self,

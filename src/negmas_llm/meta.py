@@ -13,6 +13,8 @@ from negmas.gb.common import ExtendedResponseType
 from negmas.outcomes import ExtendedOutcome, Outcome
 from negmas.sao import ResponseType, SAONegotiator, SAOState
 
+from negmas_llm.tags import process_prompt
+
 # SAOMetaNegotiator is available in negmas >= 0.16.0 (not yet released)
 # We provide a helpful error message if it's not available
 _SAO_META_NEGOTIATOR_AVAILABLE = False
@@ -380,18 +382,27 @@ class LLMMetaNegotiator(_BaseClass):  # type: ignore[valid-type, misc]
 
         return "\n".join(parts)
 
-    def _call_llm(self, messages: list[dict[str, str]]) -> str:
+    def _call_llm(
+        self, messages: list[dict[str, str]], state: SAOState | None = None
+    ) -> str:
         """Call the LLM and get a response.
 
         Args:
             messages: The conversation messages.
+            state: The current negotiation state (for tag processing).
 
         Returns:
             The LLM response text.
         """
+        # Process all message contents with process_prompt
+        processed_messages = []
+        for msg in messages:
+            processed_content = process_prompt(msg["content"], self, state)
+            processed_messages.append({**msg, "content": processed_content})
+
         kwargs: dict[str, Any] = {
             "model": self.get_model_string(),
-            "messages": messages,
+            "messages": processed_messages,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
             **self.llm_kwargs,
@@ -455,7 +466,7 @@ class LLMMetaNegotiator(_BaseClass):  # type: ignore[valid-type, misc]
             {"role": "user", "content": user_message},
         ]
 
-        response_text = self._call_llm(messages)
+        response_text = self._call_llm(messages, state)
         return self._parse_text_response(response_text)
 
     def _extract_received_text(self, state: SAOState) -> str | None:

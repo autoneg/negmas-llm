@@ -502,6 +502,37 @@ class TestEdgeCases:
         result = process_prompt("", negotiator)
         assert result == ""
 
+    def test_escaped_braces(self, negotiator):
+        """Test that escaped braces are preserved as literals."""
+        # Single escape
+        prompt = "JSON example: \\{{key\\}}"
+        result = process_prompt(prompt, negotiator)
+        assert result == "JSON example: {{key}}"
+
+        # Double braces escaped
+        prompt = "Use \\{{tag-name\\}} for tags"
+        result = process_prompt(prompt, negotiator)
+        assert result == "Use {{tag-name}} for tags"
+
+        # Mixed escaped and real tags
+        prompt = "Real: {{reserved-value}}, Escaped: \\{{not-a-tag\\}}"
+        result = process_prompt(prompt, negotiator)
+        assert "\\{{" not in result
+        assert "{{not-a-tag}}" in result
+        # reserved-value should be replaced with actual value
+        assert "{{reserved-value}}" not in result
+
+    def test_escaped_braces_in_json_example(self, negotiator):
+        """Test escaped braces for showing JSON format in prompts."""
+        prompt = """Respond in JSON format:
+\\{{"decision": "accept", "reasoning": "explanation"\\}}"""
+        result = process_prompt(prompt, negotiator)
+        assert (
+            result
+            == """Respond in JSON format:
+{{"decision": "accept", "reasoning": "explanation"}}"""
+        )
+
     def test_max_iterations_protection(self, negotiator):
         """Test that infinite loops are prevented."""
 

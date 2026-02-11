@@ -27,11 +27,10 @@ from typing import TYPE_CHECKING, Any
 from negmas.inout import serialize
 
 if TYPE_CHECKING:
+    from negmas.negotiators import Negotiator
     from negmas.outcomes import Outcome
     from negmas.preferences import BaseUtilityFunction
     from negmas.sao import SAOState
-
-    from negmas_llm.negotiator import LLMNegotiator
 
 __all__ = [
     "Tag",
@@ -487,7 +486,7 @@ class TagContext:
     methods for formatting output.
 
     Attributes:
-        negotiator: The LLM negotiator instance.
+        negotiator: The negotiator instance.
         state: The current SAO state (may be None if not in negotiation).
         format: The requested output format.
         params: Parameters passed to the tag.
@@ -495,7 +494,7 @@ class TagContext:
 
     def __init__(
         self,
-        negotiator: LLMNegotiator,
+        negotiator: Negotiator,
         state: SAOState | None,
         format: TagFormat,
         params: dict[str, str],
@@ -801,7 +800,7 @@ def _process_single_tag(
     format_str: str | None,
     param_str: str | None,
     original_text: str,
-    negotiator: LLMNegotiator,
+    negotiator: Negotiator,
     state: SAOState | None,
 ) -> str:
     """Process a single tag.
@@ -848,7 +847,7 @@ def _process_single_tag(
 
 def process_prompt(
     prompt: str,
-    negotiator: LLMNegotiator,
+    negotiator: Negotiator,
     state: SAOState | None = None,
 ) -> str:
     """Process a prompt, replacing all tags with their values.
@@ -858,9 +857,13 @@ def process_prompt(
 
     Tags are processed from innermost to outermost to support nesting.
 
+    Escape sequences:
+    - Use \\{{ to output a literal {{
+    - Use \\}} to output a literal }}
+
     Args:
         prompt: The prompt string containing tags.
-        negotiator: The LLM negotiator instance.
+        negotiator: The negotiator instance.
         state: The current SAO state (optional).
 
     Returns:
@@ -869,7 +872,16 @@ def process_prompt(
     Example:
         >>> prompt = "Outcome space: {{outcome-space:json}}"
         >>> processed = process_prompt(prompt, negotiator, state)
+        >>> # Use \\{{ and \\}} for literal braces:
+        >>> prompt = "JSON example: \\{{\\"key\\": \\"value\\"\\}}"
+        >>> # Results in: JSON example: {{"key": "value"}}
     """
+    # Temporarily replace escape sequences with placeholders
+    _ESCAPE_OPEN = "\x00ESCAPE_OPEN\x00"
+    _ESCAPE_CLOSE = "\x00ESCAPE_CLOSE\x00"
+    prompt = prompt.replace("\\{{", _ESCAPE_OPEN)
+    prompt = prompt.replace("\\}}", _ESCAPE_CLOSE)
+
     # Process iteratively until no more tags are found
     # This handles nested tags by processing innermost first
     max_iterations = 100  # Prevent infinite loops
@@ -899,6 +911,10 @@ def process_prompt(
             break
         prompt = new_prompt
         iteration += 1
+
+    # Restore escaped sequences to literal braces
+    prompt = prompt.replace(_ESCAPE_OPEN, "{{")
+    prompt = prompt.replace(_ESCAPE_CLOSE, "}}")
 
     return prompt
 
