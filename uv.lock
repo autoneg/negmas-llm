@@ -1725,7 +1725,7 @@ wheels = [
 
 [[package]]
 name = "negmas"
-version = "0.15.0"
+version = "0.15.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
@@ -1756,14 +1756,14 @@ dependencies = [
     { name = "typer" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d4/2c/29a8ad420bb00f818cf6578565b365ab806a4bbb4c833ac015e1bcc89e5a/negmas-0.15.0.tar.gz", hash = "sha256:fbbb4e04a3a83fba932889d32fea3ebbab8090d67e3899fb01488be31da22e6d", size = 739666, upload-time = "2026-02-03T10:22:13.945Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/29/af/da132224edff15bf42b928246704eaedd36139327290592ee9335079aa47/negmas-0.15.1.tar.gz", hash = "sha256:3bd73f006c79545edd34e93ef12f41bdda5d02d4a6d6cd505b957485592271ba", size = 776271, upload-time = "2026-02-13T07:20:05.121Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/12/3c/d6c6fecc80aac34cba08feabb57126f4bfa2967be3cff8bce242532c5c47/negmas-0.15.0-py3-none-any.whl", hash = "sha256:8d430dd2fd984b31240f80cbaf0dd846e2991e1e3a50f374cc159e9f86644179", size = 815612, upload-time = "2026-02-03T10:22:12.452Z" },
+    { url = "https://files.pythonhosted.org/packages/34/fa/7c34c9ebe75cb7a18e41d7613020463c84233f9731fba842acd3c99828dd/negmas-0.15.1-py3-none-any.whl", hash = "sha256:967be26dd97ba9a6bcce8fc928ba833e638821d9b568696d63e5d42a80f157c8", size = 851544, upload-time = "2026-02-13T07:20:03.379Z" },
 ]
 
 [[package]]
 name = "negmas-llm"
-version = "0.2.2"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "litellm" },
@@ -1790,7 +1790,7 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "litellm", specifier = ">=1.80.11" },
-    { name = "negmas", specifier = ">=0.14.0" },
+    { name = "negmas", specifier = ">=0.15.1" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.5.1" },
 ]
 provides-extras = ["dev"]
