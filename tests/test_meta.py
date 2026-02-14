@@ -16,8 +16,8 @@ from negmas.sao import (
 
 from negmas_llm import LLMMetaNegotiator, is_meta_negotiator_available
 
-# Use environment variable for model, defaulting to qwen3:1.7b (small/fast)
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:1.7b")
+# Use environment variable for model, defaulting to qwen3:0.6b (small/fast)
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:0.6b")
 
 
 class TestMetaNegotiatorAvailability:

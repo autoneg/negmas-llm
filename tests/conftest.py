@@ -38,7 +38,7 @@ from negmas_llm import LLMNegotiator
 
 # Default models for each provider
 DEFAULT_MODELS: dict[str, str] = {
-    "ollama": "qwen3:1.7b",
+    "ollama": "qwen3:0.6b",
     "openai": "gpt-4o-mini",
     "anthropic": "claude-sonnet-4-20250514",
     "gemini": "gemini-2.0-flash",
