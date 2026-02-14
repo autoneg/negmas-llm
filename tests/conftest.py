@@ -101,9 +101,10 @@ class LLMConfig:
             except Exception:
                 return False
 
-        # OAuth providers (github_copilot) - always available, auth at runtime
+        # OAuth providers (github_copilot) - skip in CI as they require interactive auth
         if self.provider in OAUTH_PROVIDERS:
-            return True
+            # In CI environments, OAuth providers can't authenticate interactively
+            return not os.environ.get("CI")
 
         # Cloud providers - check if API key is available
         if self.provider in API_KEY_ENV_VARS:
