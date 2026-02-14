@@ -109,6 +109,114 @@ _UFUN_DOCSTRING = _dedent("""
     """)
 
 # =============================================================================
+# Default Prompts (can be overridden via constructor or properties)
+# =============================================================================
+
+DEFAULT_SYSTEM_PROMPT = _dedent("""
+    You are an expert negotiator participating in an automated negotiation.
+    Your goal is to negotiate effectively to achieve good outcomes for yourself
+    while finding mutually acceptable agreements when possible.
+
+    You will receive information about the negotiation setup (outcome space,
+    utility functions) at the start, and then be asked to make decisions for
+    each negotiation round.
+
+    Always respond in the exact JSON format requested. Be strategic and
+    rational, aiming to maximize your utility while reaching agreements.
+    """)
+
+DEFAULT_PREFERENCES_PROMPT = _dedent("""
+    # Negotiation Setup
+
+    You are about to participate in a negotiation. Here is the setup:
+
+    ## Mechanism Information
+    {nmi_docstring}
+    {{{{nmi:text}}}}
+
+    ## Outcome Space
+    The negotiation outcome space defines possible agreements:
+    {{{{outcome-space:json}}}}
+
+    ## Your Utility Function
+    {ufun_docstring}
+    {{{{utility-function:text}}}}
+    Your reserved value (utility of no agreement): {{{{reserved-value}}}}
+
+    ## Opponent's Utility Function
+    {{{{opponent-utility-function:text}}}}
+    """).format(nmi_docstring=_SAONMI_DOCSTRING, ufun_docstring=_UFUN_DOCSTRING)
+
+DEFAULT_PREFERENCES_CHANGED_PROMPT = _dedent("""
+    # Preferences Changed
+
+    Your preferences have changed. Change types: {change_types}
+
+    ## Mechanism Information
+    {nmi_docstring}
+    {{{{nmi:text}}}}
+
+    ## Outcome Space
+    The negotiation outcome space defines possible agreements:
+    {{{{outcome-space:json}}}}
+
+    ## Your Utility Function
+    {ufun_docstring}
+    {{{{utility-function:text}}}}
+    Your reserved value (utility of no agreement): {{{{reserved-value}}}}
+
+    ## Opponent's Utility Function
+    {{{{opponent-utility-function:text}}}}
+    """).format(
+    nmi_docstring=_SAONMI_DOCSTRING,
+    ufun_docstring=_UFUN_DOCSTRING,
+    change_types="{change_types}",
+)
+
+DEFAULT_NEGOTIATION_START_PROMPT = _dedent("""
+    # Negotiation Started
+
+    The negotiation has now started. For each round, you will be asked to:
+    1. Analyze the current state and any offer received
+    2. Decide whether to ACCEPT, REJECT (with counter-offer), or END
+    3. Optionally provide persuasive text for the other party
+
+    Respond in this JSON format for each decision:
+    ```json
+    {
+        "response_type": "accept" | "reject" | "end" | "wait",
+        "outcome": [value1, value2, ...] | null,
+        "text": "optional persuasive message to send to your opponent",
+        "reasoning": "brief explanation of your decision (not sent to opponent)"
+    }
+    ```
+
+    Where:
+    - "accept": Accept the current offer on the table
+    - "reject": Reject and provide a counter-offer in "outcome"
+    - "end": End the negotiation without agreement
+    - "wait": Wait without making an offer (only if allowed by mechanism)
+    - "outcome": Your counter-offer as a list matching issue order, or null
+    - "text": A message to send to your opponent (actually delivered to them)
+    - "reasoning": Your internal reasoning (optional, not sent to opponent)
+
+    You may occasionally send ONLY text (null outcome) to persuade the
+    opponent, but this should be rare and strategic. Include an outcome usually.
+
+    Ready to begin!
+    """)
+
+DEFAULT_ROUND_PROMPT = _dedent("""
+    # Round {step}
+
+    **Step**: {step} | **Time**: {relative_time:.1%} | **Running**: {running}
+
+    {offer_info}
+
+    What is your decision? Respond with JSON.
+    """)
+
+# =============================================================================
 # Structured Output Schema for LLM Responses
 # =============================================================================
 
@@ -133,14 +241,14 @@ _NEGOTIATION_RESPONSE_SCHEMA: dict[str, Any] = {
                 },
                 "text": {
                     "type": ["string", "null"],
-                    "description": "Optional persuasive message for opponent",
+                    "description": "Message to send to the opponent",
                 },
                 "reasoning": {
                     "type": ["string", "null"],
-                    "description": "Brief explanation of your decision",
+                    "description": "Your decision explanation (not sent to opponent)",
                 },
             },
-            "required": ["response_type", "outcome", "text", "reasoning"],
+            "required": ["response_type", "outcome", "text"],
             "additionalProperties": False,
         },
     },
@@ -216,7 +324,18 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         use_structured_output: If True (default), use structured output/JSON mode
             when the provider supports it. This guarantees valid JSON responses.
             Set to False to disable and rely on prompt-based JSON extraction.
-        system_prompt: Custom system prompt for the LLM conversation.
+        include_reasoning: If True, include the LLM's reasoning in the response
+            data sent to the partner. Default is False (reasoning is not shared).
+        system_prompt: Custom system prompt for the LLM conversation. Supports
+            tags like {{outcome-space}}, {{utility-function}}, etc.
+        preferences_prompt: Custom prompt sent when preferences are first set.
+            Supports tags. Use {nmi_docstring} and {ufun_docstring} placeholders.
+        preferences_changed_prompt: Custom prompt sent when preferences change.
+            Supports tags. Use {change_types} placeholder for change information.
+        negotiation_start_prompt: Custom prompt sent when negotiation starts.
+            Supports tags.
+        round_prompt: Custom prompt sent each round. Supports tags.
+            Use {step}, {relative_time}, {running}, {offer_info} placeholders.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         preferences: The preferences of the negotiator.
         ufun: The utility function (overrides preferences if given).
@@ -239,7 +358,12 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         temperature: float = 0.7,
         max_tokens: int = 1024,
         use_structured_output: bool = True,
+        include_reasoning: bool = False,
         system_prompt: str | None = None,
+        preferences_prompt: str | None = None,
+        preferences_changed_prompt: str | None = None,
+        negotiation_start_prompt: str | None = None,
+        round_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         preferences: Preferences | None = None,
         ufun: BaseUtilityFunction | None = None,
@@ -269,8 +393,19 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.use_structured_output = use_structured_output
-        self._custom_system_prompt = system_prompt
+        self.include_reasoning = include_reasoning
         self.llm_kwargs = llm_kwargs or {}
+
+        # Configurable prompts (use defaults if not provided)
+        self._system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
+        self._preferences_prompt = preferences_prompt or DEFAULT_PREFERENCES_PROMPT
+        self._preferences_changed_prompt = (
+            preferences_changed_prompt or DEFAULT_PREFERENCES_CHANGED_PROMPT
+        )
+        self._negotiation_start_prompt = (
+            negotiation_start_prompt or DEFAULT_NEGOTIATION_START_PROMPT
+        )
+        self._round_prompt = round_prompt or DEFAULT_ROUND_PROMPT
 
         # Conversation history for the LLM (persistent across rounds)
         self._conversation_history: list[dict[str, str]] = []
@@ -284,6 +419,79 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             The full model string in litellm format (provider/model).
         """
         return f"{self.provider}/{self.model}"
+
+    # =========================================================================
+    # Configurable Prompt Properties
+    # =========================================================================
+
+    @property
+    def system_prompt(self) -> str:
+        """The system prompt for the LLM conversation.
+
+        When set, the new system prompt will be used for all subsequent LLM calls.
+        If changed mid-conversation, the conversation history is preserved but
+        the new system prompt takes effect immediately.
+        """
+        return self._system_prompt
+
+    @system_prompt.setter
+    def system_prompt(self, value: str) -> None:
+        """Set the system prompt.
+
+        Args:
+            value: The new system prompt.
+        """
+        self._system_prompt = value
+
+    @property
+    def preferences_prompt(self) -> str:
+        """The prompt template sent when preferences are first set.
+
+        Supports tags like {{outcome-space}}, {{utility-function}}, etc.
+        Also supports {nmi_docstring} and {ufun_docstring} placeholders.
+        """
+        return self._preferences_prompt
+
+    @preferences_prompt.setter
+    def preferences_prompt(self, value: str) -> None:
+        self._preferences_prompt = value
+
+    @property
+    def preferences_changed_prompt(self) -> str:
+        """The prompt template sent when preferences change.
+
+        Supports tags. Use {change_types} placeholder for change information.
+        """
+        return self._preferences_changed_prompt
+
+    @preferences_changed_prompt.setter
+    def preferences_changed_prompt(self, value: str) -> None:
+        self._preferences_changed_prompt = value
+
+    @property
+    def negotiation_start_prompt(self) -> str:
+        """The prompt template sent when negotiation starts.
+
+        Supports tags like {{outcome-space}}, {{current-state}}, etc.
+        """
+        return self._negotiation_start_prompt
+
+    @negotiation_start_prompt.setter
+    def negotiation_start_prompt(self, value: str) -> None:
+        self._negotiation_start_prompt = value
+
+    @property
+    def round_prompt(self) -> str:
+        """The prompt template sent each round.
+
+        Supports tags and {step}, {relative_time}, {running}, {offer_info}
+        placeholders which are filled with the current state information.
+        """
+        return self._round_prompt
+
+    @round_prompt.setter
+    def round_prompt(self, value: str) -> None:
+        self._round_prompt = value
 
     def process_prompt(self, prompt: str, state: SAOState | None = None) -> str:
         """Process a prompt, replacing all tags with their values.
@@ -385,14 +593,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             The LLM response text.
         """
         # Build messages: system prompt + conversation history + new message
-        messages = []
-
-        if self._custom_system_prompt:
-            messages.append({"role": "system", "content": self._custom_system_prompt})
-        else:
-            messages.append(
-                {"role": "system", "content": self._build_base_system_prompt()}
-            )
+        messages = [{"role": "system", "content": self._system_prompt}]
 
         messages.extend(self._conversation_history)
         messages.append({"role": role, "content": message})
@@ -406,19 +607,12 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         return response
 
     def _build_base_system_prompt(self) -> str:
-        """Build the base system prompt that sets up the LLM as a negotiator."""
-        return _dedent("""
-            You are an expert negotiator participating in an automated negotiation.
-            Your goal is to negotiate effectively to achieve good outcomes for yourself
-            while finding mutually acceptable agreements when possible.
+        """Build the base system prompt that sets up the LLM as a negotiator.
 
-            You will receive information about the negotiation setup (outcome space,
-            utility functions) at the start, and then be asked to make decisions for
-            each negotiation round.
-
-            Always respond in the exact JSON format requested. Be strategic and
-            rational, aiming to maximize your utility while reaching agreements.
-            """)
+        Note: This method is kept for backward compatibility. The actual system
+        prompt used is the `system_prompt` property.
+        """
+        return DEFAULT_SYSTEM_PROMPT
 
     # =========================================================================
     # Negotiation Lifecycle Callbacks
@@ -443,41 +637,18 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         is_first = not self._preferences_sent
         self._preferences_sent = True
 
-        # Build the preferences message
-        parts = []
-
+        # Use the appropriate prompt template
         if is_first:
-            parts.append("# Negotiation Setup\n")
-            parts.append(
-                "You are about to participate in a negotiation. Here is the setup:\n"
-            )
+            prompt_template = self._preferences_prompt
         else:
-            parts.append("# Preferences Changed\n")
-            change_types = [c.type.name for c in changes]
-            change_str = ", ".join(change_types)
-            parts.append(f"Your preferences have changed. Change types: {change_str}\n")
+            # Format change_types into the preferences_changed_prompt
+            change_types = ", ".join(c.type.name for c in changes)
+            prompt_template = self._preferences_changed_prompt.format(
+                change_types=change_types
+            )
 
-        # Add NMI info
-        parts.append(f"\n## Mechanism Information\n{_SAONMI_DOCSTRING}\n")
-        parts.append("{{nmi:text}}\n")
-
-        # Add outcome space
-        parts.append("\n## Outcome Space\n")
-        parts.append("The negotiation outcome space defines possible agreements:\n")
-        parts.append("{{outcome-space:json}}\n")
-
-        # Add utility function
-        parts.append(f"\n## Your Utility Function\n{_UFUN_DOCSTRING}\n")
-        parts.append("{{utility-function:text}}\n")
-        parts.append(
-            "Your reserved value (utility of no agreement): {{reserved-value}}\n"
-        )
-
-        # Add opponent utility if known
-        parts.append("\n## Opponent's Utility Function\n")
-        parts.append("{{opponent-utility-function:text}}\n")
-
-        message = self.process_prompt("".join(parts), state=None)
+        # Process tags in the prompt
+        message = self.process_prompt(prompt_template, state=None)
 
         # Send to LLM (don't need to use the response, just inform it)
         response = self._send_to_llm(message)
@@ -493,36 +664,8 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         """
         super().on_negotiation_start(state)
 
-        message = _dedent("""
-            # Negotiation Started
-
-            The negotiation has now started. For each round, you will be asked to:
-            1. Analyze the current state and any offer received
-            2. Decide whether to ACCEPT, REJECT (with counter-offer), or END
-            3. Optionally provide persuasive text for the other party
-
-            Respond in this JSON format for each decision:
-            ```json
-            {
-                "response_type": "accept" | "reject" | "end" | "wait",
-                "outcome": [value1, value2, ...] | null,
-                "text": "optional persuasive message to opponent",
-                "reasoning": "brief explanation of your decision (for your records)"
-            }
-            ```
-
-            Where:
-            - "accept": Accept the current offer on the table
-            - "reject": Reject and provide a counter-offer in "outcome"
-            - "end": End the negotiation without agreement
-            - "wait": Wait without making an offer (only if allowed by mechanism)
-            - "outcome": Your counter-offer as a list matching issue order, or null
-
-            You may occasionally send ONLY text (null outcome) to persuade the
-            opponent, but this should be rare and strategic. Include an outcome usually.
-
-            Ready to begin!
-            """)
+        # Process tags in the negotiation start prompt
+        message = self.process_prompt(self._negotiation_start_prompt, state=None)
         response = self._send_to_llm(message)
         _ = response
 
@@ -545,39 +688,44 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         Returns:
             SAOResponse with response type, outcome, and optional data.
         """
-        # Build the round message
-        parts = [f"# Round {state.step + 1}\n"]
-
-        # Current state (concise)
-        parts.append(f"**Step**: {state.step} | ")
-        parts.append(f"**Time**: {state.relative_time:.1%} | ")
-        parts.append(f"**Running**: {state.running}\n\n")
-
-        # Current offer
+        # Build the offer_info part
+        offer_info_parts = []
         if state.current_offer is not None:
             offer_str = self._format_outcome(state.current_offer)
-            parts.append(f"**Offer on table**: {offer_str}")
+            offer_info_parts.append(f"**Offer on table**: {offer_str}")
             if state.current_proposer:
                 is_mine = state.current_proposer == self.id
                 proposer_label = "You" if is_mine else state.current_proposer
-                parts.append(f" (from {proposer_label})")
-            parts.append("\n")
+                offer_info_parts.append(f" (from {proposer_label})")
+            offer_info_parts.append("\n")
 
             # Utility of current offer
             if self.ufun is not None:
                 utility = self.ufun(state.current_offer)
                 reserved = self.reserved_value
-                parts.append(f"**Your utility for this offer**: {utility:.4f}")
+                offer_info_parts.append(
+                    f"**Your utility for this offer**: {utility:.4f}"
+                )
                 if reserved is not None:
-                    parts.append(f" (reserved value: {reserved:.4f})")
-                parts.append("\n")
+                    offer_info_parts.append(f" (reserved value: {reserved:.4f})")
+                offer_info_parts.append("\n")
         else:
-            parts.append("**No offer on table** - you may make a proposal.\n")
+            offer_info_parts.append(
+                "**No offer on table** - you may make a proposal.\n"
+            )
 
-        # Ask for decision
-        parts.append("\nWhat is your decision? Respond with JSON.")
+        offer_info = "".join(offer_info_parts)
 
-        message = "".join(parts)
+        # Format the round prompt with placeholders
+        message = self._round_prompt.format(
+            step=state.step + 1,
+            relative_time=state.relative_time,
+            running=state.running,
+            offer_info=offer_info,
+        )
+
+        # Process any tags in the prompt
+        message = self.process_prompt(message, state=state)
         response_text = self._send_to_llm(message, require_json=True)
 
         # Parse the response
@@ -585,13 +733,13 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             response_text, state
         )
 
-        # Build response data
+        # Build response data (only include text; reasoning only if configured)
         response_data: dict[str, Any] | None = None
-        if text or reasoning:
+        if text or (reasoning and self.include_reasoning):
             response_data = {}
             if text:
                 response_data["text"] = text
-            if reasoning:
+            if reasoning and self.include_reasoning:
                 response_data["reasoning"] = reasoning
 
         return SAOResponse(
@@ -642,7 +790,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         if outcome_data is not None and isinstance(outcome_data, list):
             outcome = tuple(outcome_data)
 
-        # Parse text and reasoning
+        # Parse text (message to send to opponent) and reasoning
         text = data.get("text")
         reasoning = data.get("reasoning")
 

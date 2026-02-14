@@ -12,26 +12,9 @@ from litellm import ModelResponse
 from negmas.gb.common import ExtendedResponseType
 from negmas.outcomes import ExtendedOutcome, Outcome
 from negmas.sao import ResponseType, SAONegotiator, SAOState
+from negmas.sao.negotiators.meta import SAOMetaNegotiator
 
 from negmas_llm.tags import process_prompt
-
-# SAOMetaNegotiator is available in negmas >= 0.16.0 (not yet released)
-# We provide a helpful error message if it's not available
-_SAO_META_NEGOTIATOR_AVAILABLE = False
-_SAO_META_NEGOTIATOR_ERROR: str | None = None
-
-try:
-    from negmas.sao.negotiators.meta import SAOMetaNegotiator
-
-    _SAO_META_NEGOTIATOR_AVAILABLE = True
-except ImportError:
-    SAOMetaNegotiator = None  # type: ignore[assignment, misc]
-    _SAO_META_NEGOTIATOR_ERROR = (
-        "LLMMetaNegotiator requires negmas >= 0.16.0 which includes SAOMetaNegotiator. "
-        "The currently installed version of negmas does not include this class. "
-        "Please upgrade negmas when a new version is released, or install from source: "
-        "pip install git+https://github.com/yasserfarouk/negmas.git"
-    )
 
 if TYPE_CHECKING:
     from litellm.types.utils import Choices
@@ -74,29 +57,18 @@ def _dedent(text: str) -> str:
 
 
 def is_meta_negotiator_available() -> bool:
-    """Check if LLMMetaNegotiator is available (requires negmas >= 0.16.0).
+    """Check if LLMMetaNegotiator is available.
+
+    This function exists for backwards compatibility. SAOMetaNegotiator
+    is now always assumed to be available (requires negmas >= 0.15.1).
 
     Returns:
-        True if SAOMetaNegotiator is available and LLMMetaNegotiator can be used.
+        Always returns True.
     """
-    return _SAO_META_NEGOTIATOR_AVAILABLE
+    return True
 
 
-def _check_availability() -> None:
-    """Raise ImportError if SAOMetaNegotiator is not available."""
-    if not _SAO_META_NEGOTIATOR_AVAILABLE:
-        raise ImportError(_SAO_META_NEGOTIATOR_ERROR)
-
-
-# Define the class conditionally to avoid runtime errors
-# Use object as a placeholder base class when SAOMetaNegotiator is unavailable
-# The __init__ will raise an informative error
-_BaseClass = (  # type: ignore[assignment, misc]
-    SAOMetaNegotiator if _SAO_META_NEGOTIATOR_AVAILABLE else SAONegotiator
-)
-
-
-class LLMMetaNegotiator(_BaseClass):  # type: ignore[valid-type, misc]
+class LLMMetaNegotiator(SAOMetaNegotiator):
     """A meta-negotiator that wraps a base negotiator and adds LLM-generated text.
 
     This negotiator inherits from `SAOMetaNegotiator` and manages a single base
@@ -161,9 +133,6 @@ class LLMMetaNegotiator(_BaseClass):  # type: ignore[valid-type, misc]
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
-        # Check that SAOMetaNegotiator is available
-        _check_availability()
-
         # Initialize with the base negotiator as our single child
         super().__init__(
             negotiators=[base_negotiator],
@@ -511,27 +480,28 @@ class LLMMetaNegotiator(_BaseClass):  # type: ignore[valid-type, misc]
 # These classes provide convenient wrappers around native negmas negotiators,
 # adding LLM-generated text to their offers while preserving the original
 # negotiation strategy.
-#
-# Each class inherits from LLMMetaNegotiator and pre-configures it with the
-# appropriate base negotiator class.
 
 
-def _create_llm_negotiator_class(
-    base_class_name: str,
-    base_module: str,
-    class_name: str,
-    docstring: str,
-) -> type:
-    """Factory function to create LLM-wrapped negotiator classes.
+class LLMAspirationNegotiator(LLMMetaNegotiator):
+    """LLM-wrapped AspirationNegotiator.
+
+    This negotiator uses the aspiration-based time-dependent strategy for making
+    offers and acceptance decisions, while adding LLM-generated persuasive text
+    to accompany each offer.
+
+    The aspiration negotiator starts with high aspirations (demanding offers)
+    and gradually lowers them over time.
 
     Args:
-        base_class_name: Name of the base negotiator class.
-        base_module: Module containing the base class.
-        class_name: Name for the new LLM-wrapped class.
-        docstring: Docstring for the new class.
-
-    Returns:
-        A new class that wraps the base negotiator with LLM text generation.
+        provider: The LLM provider (default: "ollama").
+        model: The model name (default: "llama3.1:8b").
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API.
+        temperature: Sampling temperature for the LLM (default: 0.7).
+        max_tokens: Maximum tokens in the LLM response (default: 512).
+        system_prompt: Custom system prompt for text generation.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to the base negotiator.
     """
 
     def __init__(
@@ -545,23 +515,12 @@ def _create_llm_negotiator_class(
         max_tokens: int = 512,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
-        base_negotiator_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
-        _check_availability()
+        from negmas.gb.negotiators.timebased import AspirationNegotiator
 
-        # Import the base class dynamically
-        import importlib
-
-        module = importlib.import_module(base_module)
-        base_cls = getattr(module, base_class_name)
-
-        # Create the base negotiator
-        base_kwargs = base_negotiator_kwargs or {}
-        base_negotiator = base_cls(**base_kwargs)
-
-        # Initialize the LLMMetaNegotiator
-        super(self.__class__, self).__init__(
+        base_negotiator = AspirationNegotiator(**kwargs)
+        super().__init__(
             base_negotiator=base_negotiator,
             provider=provider,
             model=model,
@@ -571,600 +530,1029 @@ def _create_llm_negotiator_class(
             max_tokens=max_tokens,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
-            **kwargs,
         )
 
-    # Create the class dynamically
-    new_class = type(
-        class_name,
-        (LLMMetaNegotiator,),
-        {
-            "__init__": __init__,
-            "__doc__": docstring,
-            "__module__": __name__,
-            "_base_class_name": base_class_name,
-            "_base_module": base_module,
-        },
-    )
-
-    return new_class
-
-
-# Time-based negotiators
-LLMAspirationNegotiator = _create_llm_negotiator_class(
-    base_class_name="AspirationNegotiator",
-    base_module="negmas.gb.negotiators.timebased",
-    class_name="LLMAspirationNegotiator",
-    docstring="""\
-LLM-wrapped AspirationNegotiator.
-
-This negotiator uses the aspiration-based time-dependent strategy for making
-offers and acceptance decisions, while adding LLM-generated persuasive text
-to accompany each offer.
-
-The aspiration negotiator starts with high aspirations (demanding offers)
-and gradually lowers them over time.
-
-Args:
-    provider: The LLM provider (e.g., "openai", "anthropic", "ollama").
-    model: The model name (e.g., "gpt-4", "claude-3-opus").
-    api_key: API key for the provider (if required).
-    api_base: Base URL for the API.
-    temperature: Sampling temperature for the LLM (default: 0.7).
-    max_tokens: Maximum tokens in the LLM response (default: 512).
-    system_prompt: Custom system prompt for text generation.
-    llm_kwargs: Additional keyword arguments passed to litellm.completion.
-    base_negotiator_kwargs: Keyword arguments passed to the base negotiator.
-    **kwargs: Additional arguments passed to SAOMetaNegotiator.
-""",
-)
-
-
-LLMBoulwareTBNegotiator = _create_llm_negotiator_class(
-    base_class_name="BoulwareTBNegotiator",
-    base_module="negmas.gb.negotiators.timebased",
-    class_name="LLMBoulwareTBNegotiator",
-    docstring="""\
-LLM-wrapped BoulwareTBNegotiator.
-
-This negotiator uses the Boulware time-based concession strategy, which
-concedes slowly at first and more rapidly near the deadline. LLM-generated
-persuasive text accompanies each offer.
-
-Args:
-    provider: The LLM provider (e.g., "openai", "anthropic", "ollama").
-    model: The model name (e.g., "gpt-4", "claude-3-opus").
-    api_key: API key for the provider (if required).
-    api_base: Base URL for the API.
-    temperature: Sampling temperature for the LLM (default: 0.7).
-    max_tokens: Maximum tokens in the LLM response (default: 512).
-    system_prompt: Custom system prompt for text generation.
-    llm_kwargs: Additional keyword arguments passed to litellm.completion.
-    base_negotiator_kwargs: Keyword arguments passed to the base negotiator.
-    **kwargs: Additional arguments passed to SAOMetaNegotiator.
-""",
-)
-
-
-LLMConcederTBNegotiator = _create_llm_negotiator_class(
-    base_class_name="ConcederTBNegotiator",
-    base_module="negmas.gb.negotiators.timebased",
-    class_name="LLMConcederTBNegotiator",
-    docstring="""\
-LLM-wrapped ConcederTBNegotiator.
-
-This negotiator uses the Conceder time-based strategy, which concedes
-rapidly at first and slows down near the deadline. LLM-generated text
-accompanies each offer.
-
-Args:
-    provider: The LLM provider (e.g., "openai", "anthropic", "ollama").
-    model: The model name (e.g., "gpt-4", "claude-3-opus").
-    api_key: API key for the provider (if required).
-    api_base: Base URL for the API.
-    temperature: Sampling temperature for the LLM (default: 0.7).
-    max_tokens: Maximum tokens in the LLM response (default: 512).
-    system_prompt: Custom system prompt for text generation.
-    llm_kwargs: Additional keyword arguments passed to litellm.completion.
-    base_negotiator_kwargs: Keyword arguments passed to the base negotiator.
-    **kwargs: Additional arguments passed to SAOMetaNegotiator.
-""",
-)
-
-
-LLMLinearTBNegotiator = _create_llm_negotiator_class(
-    base_class_name="LinearTBNegotiator",
-    base_module="negmas.gb.negotiators.timebased",
-    class_name="LLMLinearTBNegotiator",
-    docstring="""\
-LLM-wrapped LinearTBNegotiator.
-
-This negotiator uses a linear time-based concession strategy, conceding
-at a constant rate over time. LLM-generated text accompanies each offer.
-
-Args:
-    provider: The LLM provider (e.g., "openai", "anthropic", "ollama").
-    model: The model name (e.g., "gpt-4", "claude-3-opus").
-    api_key: API key for the provider (if required).
-    api_base: Base URL for the API.
-    temperature: Sampling temperature for the LLM (default: 0.7).
-    max_tokens: Maximum tokens in the LLM response (default: 512).
-    system_prompt: Custom system prompt for text generation.
-    llm_kwargs: Additional keyword arguments passed to litellm.completion.
-    base_negotiator_kwargs: Keyword arguments passed to the base negotiator.
-    **kwargs: Additional arguments passed to SAOMetaNegotiator.
-""",
-)
-
-
-LLMTimeBasedConcedingNegotiator = _create_llm_negotiator_class(
-    base_class_name="TimeBasedConcedingNegotiator",
-    base_module="negmas.gb.negotiators.timebased",
-    class_name="LLMTimeBasedConcedingNegotiator",
-    docstring="""\
-LLM-wrapped TimeBasedConcedingNegotiator.
-
-A configurable time-based conceding negotiator with LLM-generated text
-accompanying each offer.
-
-Args:
-    provider: The LLM provider (e.g., "openai", "anthropic", "ollama").
-    model: The model name (e.g., "gpt-4", "claude-3-opus").
-    api_key: API key for the provider (if required).
-    api_base: Base URL for the API.
-    temperature: Sampling temperature for the LLM (default: 0.7).
-    max_tokens: Maximum tokens in the LLM response (default: 512).
-    system_prompt: Custom system prompt for text generation.
-    llm_kwargs: Additional keyword arguments passed to litellm.completion.
-    base_negotiator_kwargs: Keyword arguments passed to the base negotiator.
-    **kwargs: Additional arguments passed to SAOMetaNegotiator.
-""",
-)
-
-
-LLMTimeBasedNegotiator = _create_llm_negotiator_class(
-    base_class_name="TimeBasedNegotiator",
-    base_module="negmas.gb.negotiators.timebased",
-    class_name="LLMTimeBasedNegotiator",
-    docstring="""\
-LLM-wrapped TimeBasedNegotiator.
-
-A general time-based negotiator with LLM-generated text accompanying
-each offer.
-
-Args:
-    provider: The LLM provider (e.g., "openai", "anthropic", "ollama").
-    model: The model name (e.g., "gpt-4", "claude-3-opus").
-    api_key: API key for the provider (if required).
-    api_base: Base URL for the API.
-    temperature: Sampling temperature for the LLM (default: 0.7).
-    max_tokens: Maximum tokens in the LLM response (default: 512).
-    system_prompt: Custom system prompt for text generation.
-    llm_kwargs: Additional keyword arguments passed to litellm.completion.
-    base_negotiator_kwargs: Keyword arguments passed to the base negotiator.
-    **kwargs: Additional arguments passed to SAOMetaNegotiator.
-""",
-)
-
-
-# Nice and Tough negotiators
-LLMNiceNegotiator = _create_llm_negotiator_class(
-    base_class_name="NiceNegotiator",
-    base_module="negmas.gb.negotiators.nice",
-    class_name="LLMNiceNegotiator",
-    docstring="""\
-LLM-wrapped NiceNegotiator.
-
-A cooperative negotiator that makes nice offers with LLM-generated
-persuasive text.
-
-Args:
-    provider: The LLM provider (e.g., "openai", "anthropic", "ollama").
-    model: The model name (e.g., "gpt-4", "claude-3-opus").
-    api_key: API key for the provider (if required).
-    api_base: Base URL for the API.
-    temperature: Sampling temperature for the LLM (default: 0.7).
-    max_tokens: Maximum tokens in the LLM response (default: 512).
-    system_prompt: Custom system prompt for text generation.
-    llm_kwargs: Additional keyword arguments passed to litellm.completion.
-    base_negotiator_kwargs: Keyword arguments passed to the base negotiator.
-    **kwargs: Additional arguments passed to SAOMetaNegotiator.
-""",
-)
-
-
-LLMToughNegotiator = _create_llm_negotiator_class(
-    base_class_name="ToughNegotiator",
-    base_module="negmas.gb.negotiators.tough",
-    class_name="LLMToughNegotiator",
-    docstring="""\
-LLM-wrapped ToughNegotiator.
-
-An aggressive negotiator that makes tough offers with LLM-generated text.
-
-Args:
-    provider: The LLM provider (e.g., "openai", "anthropic", "ollama").
-    model: The model name (e.g., "gpt-4", "claude-3-opus").
-    api_key: API key for the provider (if required).
-    api_base: Base URL for the API.
-    temperature: Sampling temperature for the LLM (default: 0.7).
-    max_tokens: Maximum tokens in the LLM response (default: 512).
-    system_prompt: Custom system prompt for text generation.
-    llm_kwargs: Additional keyword arguments passed to litellm.completion.
-    base_negotiator_kwargs: Keyword arguments passed to the base negotiator.
-    **kwargs: Additional arguments passed to SAOMetaNegotiator.
-""",
-)
-
-
-# Tit-for-tat negotiators
-LLMNaiveTitForTatNegotiator = _create_llm_negotiator_class(
-    base_class_name="NaiveTitForTatNegotiator",
-    base_module="negmas.gb.negotiators.titfortat",
-    class_name="LLMNaiveTitForTatNegotiator",
-    docstring="""\
-LLM-wrapped NaiveTitForTatNegotiator.
-
-A tit-for-tat negotiator that mirrors the opponent's behavior with
-LLM-generated text.
-
-Args:
-    provider: The LLM provider (e.g., "openai", "anthropic", "ollama").
-    model: The model name (e.g., "gpt-4", "claude-3-opus").
-    api_key: API key for the provider (if required).
-    api_base: Base URL for the API.
-    temperature: Sampling temperature for the LLM (default: 0.7).
-    max_tokens: Maximum tokens in the LLM response (default: 512).
-    system_prompt: Custom system prompt for text generation.
-    llm_kwargs: Additional keyword arguments passed to litellm.completion.
-    base_negotiator_kwargs: Keyword arguments passed to the base negotiator.
-    **kwargs: Additional arguments passed to SAOMetaNegotiator.
-""",
-)
-
-
-# Random negotiators
-LLMRandomNegotiator = _create_llm_negotiator_class(
-    base_class_name="RandomNegotiator",
-    base_module="negmas.gb.negotiators.randneg",
-    class_name="LLMRandomNegotiator",
-    docstring="""\
-LLM-wrapped RandomNegotiator.
-
-A negotiator that makes random offers with LLM-generated text. Useful
-for testing and baselines.
-
-Args:
-    provider: The LLM provider (e.g., "openai", "anthropic", "ollama").
-    model: The model name (e.g., "gpt-4", "claude-3-opus").
-    api_key: API key for the provider (if required).
-    api_base: Base URL for the API.
-    temperature: Sampling temperature for the LLM (default: 0.7).
-    max_tokens: Maximum tokens in the LLM response (default: 512).
-    system_prompt: Custom system prompt for text generation.
-    llm_kwargs: Additional keyword arguments passed to litellm.completion.
-    base_negotiator_kwargs: Keyword arguments passed to the base negotiator.
-    **kwargs: Additional arguments passed to SAOMetaNegotiator.
-""",
-)
-
-
-LLMRandomAlwaysAcceptingNegotiator = _create_llm_negotiator_class(
-    base_class_name="RandomAlwaysAcceptingNegotiator",
-    base_module="negmas.gb.negotiators.randneg",
-    class_name="LLMRandomAlwaysAcceptingNegotiator",
-    docstring="""\
-LLM-wrapped RandomAlwaysAcceptingNegotiator.
-
-A negotiator that makes random offers but always accepts with LLM-generated
-text. Useful for testing.
-
-Args:
-    provider: The LLM provider (e.g., "openai", "anthropic", "ollama").
-    model: The model name (e.g., "gpt-4", "claude-3-opus").
-    api_key: API key for the provider (if required).
-    api_base: Base URL for the API.
-    temperature: Sampling temperature for the LLM (default: 0.7).
-    max_tokens: Maximum tokens in the LLM response (default: 512).
-    system_prompt: Custom system prompt for text generation.
-    llm_kwargs: Additional keyword arguments passed to litellm.completion.
-    base_negotiator_kwargs: Keyword arguments passed to the base negotiator.
-    **kwargs: Additional arguments passed to SAOMetaNegotiator.
-""",
-)
-
-
-# CAB/CAN/CAR negotiators (Curve-based)
-LLMCABNegotiator = _create_llm_negotiator_class(
-    base_class_name="CABNegotiator",
-    base_module="negmas.gb.negotiators.cab",
-    class_name="LLMCABNegotiator",
-    docstring="""\
-LLM-wrapped CABNegotiator.
-
-Curve-based Aspiration Boulware negotiator with LLM-generated text.
-
-Args:
-    provider: The LLM provider (e.g., "openai", "anthropic", "ollama").
-    model: The model name (e.g., "gpt-4", "claude-3-opus").
-    api_key: API key for the provider (if required).
-    api_base: Base URL for the API.
-    temperature: Sampling temperature for the LLM (default: 0.7).
-    max_tokens: Maximum tokens in the LLM response (default: 512).
-    system_prompt: Custom system prompt for text generation.
-    llm_kwargs: Additional keyword arguments passed to litellm.completion.
-    base_negotiator_kwargs: Keyword arguments passed to the base negotiator.
-    **kwargs: Additional arguments passed to SAOMetaNegotiator.
-""",
-)
-
-
-LLMCANNegotiator = _create_llm_negotiator_class(
-    base_class_name="CANNegotiator",
-    base_module="negmas.gb.negotiators.cab",
-    class_name="LLMCANNegotiator",
-    docstring="""\
-LLM-wrapped CANNegotiator.
-
-Curve-based Aspiration Nice negotiator with LLM-generated text.
-
-Args:
-    provider: The LLM provider (e.g., "openai", "anthropic", "ollama").
-    model: The model name (e.g., "gpt-4", "claude-3-opus").
-    api_key: API key for the provider (if required).
-    api_base: Base URL for the API.
-    temperature: Sampling temperature for the LLM (default: 0.7).
-    max_tokens: Maximum tokens in the LLM response (default: 512).
-    system_prompt: Custom system prompt for text generation.
-    llm_kwargs: Additional keyword arguments passed to litellm.completion.
-    base_negotiator_kwargs: Keyword arguments passed to the base negotiator.
-    **kwargs: Additional arguments passed to SAOMetaNegotiator.
-""",
-)
-
-
-LLMCARNegotiator = _create_llm_negotiator_class(
-    base_class_name="CARNegotiator",
-    base_module="negmas.gb.negotiators.cab",
-    class_name="LLMCARNegotiator",
-    docstring="""\
-LLM-wrapped CARNegotiator.
-
-Curve-based Aspiration Random negotiator with LLM-generated text.
-
-Args:
-    provider: The LLM provider (e.g., "openai", "anthropic", "ollama").
-    model: The model name (e.g., "gpt-4", "claude-3-opus").
-    api_key: API key for the provider (if required).
-    api_base: Base URL for the API.
-    temperature: Sampling temperature for the LLM (default: 0.7).
-    max_tokens: Maximum tokens in the LLM response (default: 512).
-    system_prompt: Custom system prompt for text generation.
-    llm_kwargs: Additional keyword arguments passed to litellm.completion.
-    base_negotiator_kwargs: Keyword arguments passed to the base negotiator.
-    **kwargs: Additional arguments passed to SAOMetaNegotiator.
-""",
-)
-
-
-# MiCRO negotiators
-LLMMiCRONegotiator = _create_llm_negotiator_class(
-    base_class_name="MiCRONegotiator",
-    base_module="negmas.gb.negotiators.micro",
-    class_name="LLMMiCRONegotiator",
-    docstring="""\
-LLM-wrapped MiCRONegotiator.
-
-MiCRO (Mixed strategy with CRoss Offers) negotiator with LLM-generated text.
-
-Args:
-    provider: The LLM provider (e.g., "openai", "anthropic", "ollama").
-    model: The model name (e.g., "gpt-4", "claude-3-opus").
-    api_key: API key for the provider (if required).
-    api_base: Base URL for the API.
-    temperature: Sampling temperature for the LLM (default: 0.7).
-    max_tokens: Maximum tokens in the LLM response (default: 512).
-    system_prompt: Custom system prompt for text generation.
-    llm_kwargs: Additional keyword arguments passed to litellm.completion.
-    base_negotiator_kwargs: Keyword arguments passed to the base negotiator.
-    **kwargs: Additional arguments passed to SAOMetaNegotiator.
-""",
-)
-
-
-LLMFastMiCRONegotiator = _create_llm_negotiator_class(
-    base_class_name="FastMiCRONegotiator",
-    base_module="negmas.gb.negotiators.micro",
-    class_name="LLMFastMiCRONegotiator",
-    docstring="""\
-LLM-wrapped FastMiCRONegotiator.
-
-Fast version of MiCRO negotiator with LLM-generated text.
-
-Args:
-    provider: The LLM provider (e.g., "openai", "anthropic", "ollama").
-    model: The model name (e.g., "gpt-4", "claude-3-opus").
-    api_key: API key for the provider (if required).
-    api_base: Base URL for the API.
-    temperature: Sampling temperature for the LLM (default: 0.7).
-    max_tokens: Maximum tokens in the LLM response (default: 512).
-    system_prompt: Custom system prompt for text generation.
-    llm_kwargs: Additional keyword arguments passed to litellm.completion.
-    base_negotiator_kwargs: Keyword arguments passed to the base negotiator.
-    **kwargs: Additional arguments passed to SAOMetaNegotiator.
-""",
-)
-
-
-# Utility-based negotiators
-LLMUtilBasedNegotiator = _create_llm_negotiator_class(
-    base_class_name="UtilBasedNegotiator",
-    base_module="negmas.gb.negotiators.utilbased",
-    class_name="LLMUtilBasedNegotiator",
-    docstring="""\
-LLM-wrapped UtilBasedNegotiator.
-
-Utility-based negotiator with LLM-generated text.
-
-Args:
-    provider: The LLM provider (e.g., "openai", "anthropic", "ollama").
-    model: The model name (e.g., "gpt-4", "claude-3-opus").
-    api_key: API key for the provider (if required).
-    api_base: Base URL for the API.
-    temperature: Sampling temperature for the LLM (default: 0.7).
-    max_tokens: Maximum tokens in the LLM response (default: 512).
-    system_prompt: Custom system prompt for text generation.
-    llm_kwargs: Additional keyword arguments passed to litellm.completion.
-    base_negotiator_kwargs: Keyword arguments passed to the base negotiator.
-    **kwargs: Additional arguments passed to SAOMetaNegotiator.
-""",
-)
-
-
-# WAR/WAN/WAB negotiators
-LLMWARNegotiator = _create_llm_negotiator_class(
-    base_class_name="WARNegotiator",
-    base_module="negmas.gb.negotiators.war",
-    class_name="LLMWARNegotiator",
-    docstring="""\
-LLM-wrapped WARNegotiator.
-
-War negotiator (aggressive) with LLM-generated text.
-
-Args:
-    provider: The LLM provider (e.g., "openai", "anthropic", "ollama").
-    model: The model name (e.g., "gpt-4", "claude-3-opus").
-    api_key: API key for the provider (if required).
-    api_base: Base URL for the API.
-    temperature: Sampling temperature for the LLM (default: 0.7).
-    max_tokens: Maximum tokens in the LLM response (default: 512).
-    system_prompt: Custom system prompt for text generation.
-    llm_kwargs: Additional keyword arguments passed to litellm.completion.
-    base_negotiator_kwargs: Keyword arguments passed to the base negotiator.
-    **kwargs: Additional arguments passed to SAOMetaNegotiator.
-""",
-)
-
-
-LLMWANNegotiator = _create_llm_negotiator_class(
-    base_class_name="WANNegotiator",
-    base_module="negmas.gb.negotiators.war",
-    class_name="LLMWANNegotiator",
-    docstring="""\
-LLM-wrapped WANNegotiator.
-
-War-Aspiration-Nice negotiator with LLM-generated text.
-
-Args:
-    provider: The LLM provider (e.g., "openai", "anthropic", "ollama").
-    model: The model name (e.g., "gpt-4", "claude-3-opus").
-    api_key: API key for the provider (if required).
-    api_base: Base URL for the API.
-    temperature: Sampling temperature for the LLM (default: 0.7).
-    max_tokens: Maximum tokens in the LLM response (default: 512).
-    system_prompt: Custom system prompt for text generation.
-    llm_kwargs: Additional keyword arguments passed to litellm.completion.
-    base_negotiator_kwargs: Keyword arguments passed to the base negotiator.
-    **kwargs: Additional arguments passed to SAOMetaNegotiator.
-""",
-)
-
-
-LLMWABNegotiator = _create_llm_negotiator_class(
-    base_class_name="WABNegotiator",
-    base_module="negmas.gb.negotiators.war",
-    class_name="LLMWABNegotiator",
-    docstring="""\
-LLM-wrapped WABNegotiator.
-
-War-Aspiration-Boulware negotiator with LLM-generated text.
-
-Args:
-    provider: The LLM provider (e.g., "openai", "anthropic", "ollama").
-    model: The model name (e.g., "gpt-4", "claude-3-opus").
-    api_key: API key for the provider (if required).
-    api_base: Base URL for the API.
-    temperature: Sampling temperature for the LLM (default: 0.7).
-    max_tokens: Maximum tokens in the LLM response (default: 512).
-    system_prompt: Custom system prompt for text generation.
-    llm_kwargs: Additional keyword arguments passed to litellm.completion.
-    base_negotiator_kwargs: Keyword arguments passed to the base negotiator.
-    **kwargs: Additional arguments passed to SAOMetaNegotiator.
-""",
-)
-
-
-# Limited outcomes negotiators
-LLMLimitedOutcomesNegotiator = _create_llm_negotiator_class(
-    base_class_name="LimitedOutcomesNegotiator",
-    base_module="negmas.gb.negotiators.limited",
-    class_name="LLMLimitedOutcomesNegotiator",
-    docstring="""\
-LLM-wrapped LimitedOutcomesNegotiator.
-
-A negotiator that works with a limited set of outcomes, with LLM-generated text.
-
-Args:
-    provider: The LLM provider (e.g., "openai", "anthropic", "ollama").
-    model: The model name (e.g., "gpt-4", "claude-3-opus").
-    api_key: API key for the provider (if required).
-    api_base: Base URL for the API.
-    temperature: Sampling temperature for the LLM (default: 0.7).
-    max_tokens: Maximum tokens in the LLM response (default: 512).
-    system_prompt: Custom system prompt for text generation.
-    llm_kwargs: Additional keyword arguments passed to litellm.completion.
-    base_negotiator_kwargs: Keyword arguments passed to the base negotiator.
-    **kwargs: Additional arguments passed to SAOMetaNegotiator.
-""",
-)
-
-
-LLMLimitedOutcomesAcceptor = _create_llm_negotiator_class(
-    base_class_name="LimitedOutcomesAcceptor",
-    base_module="negmas.gb.negotiators.limited",
-    class_name="LLMLimitedOutcomesAcceptor",
-    docstring="""\
-LLM-wrapped LimitedOutcomesAcceptor.
-
-An acceptor that works with a limited set of outcomes, with LLM-generated text.
-
-Args:
-    provider: The LLM provider (e.g., "openai", "anthropic", "ollama").
-    model: The model name (e.g., "gpt-4", "claude-3-opus").
-    api_key: API key for the provider (if required).
-    api_base: Base URL for the API.
-    temperature: Sampling temperature for the LLM (default: 0.7).
-    max_tokens: Maximum tokens in the LLM response (default: 512).
-    system_prompt: Custom system prompt for text generation.
-    llm_kwargs: Additional keyword arguments passed to litellm.completion.
-    base_negotiator_kwargs: Keyword arguments passed to the base negotiator.
-    **kwargs: Additional arguments passed to SAOMetaNegotiator.
-""",
-)
-
-
-# Hybrid negotiator
-LLMHybridNegotiator = _create_llm_negotiator_class(
-    base_class_name="HybridNegotiator",
-    base_module="negmas.gb.negotiators.hybrid",
-    class_name="LLMHybridNegotiator",
-    docstring="""\
-LLM-wrapped HybridNegotiator.
-
-A hybrid negotiator that combines multiple strategies using HybridOfferingPolicy
-and ACNext acceptance policy, with LLM-generated text accompanying each offer.
-
-Args:
-    provider: The LLM provider (e.g., "openai", "anthropic", "ollama").
-    model: The model name (e.g., "gpt-4", "claude-3-opus").
-    api_key: API key for the provider (if required).
-    api_base: Base URL for the API.
-    temperature: Sampling temperature for the LLM (default: 0.7).
-    max_tokens: Maximum tokens in the LLM response (default: 512).
-    system_prompt: Custom system prompt for text generation.
-    llm_kwargs: Additional keyword arguments passed to litellm.completion.
-    base_negotiator_kwargs: Keyword arguments passed to the base negotiator.
-        Supports `alpha` and `beta` parameters for the acceptance policy.
-    **kwargs: Additional arguments passed to SAOMetaNegotiator.
-""",
-)
+
+class LLMBoulwareTBNegotiator(LLMMetaNegotiator):
+    """LLM-wrapped BoulwareTBNegotiator.
+
+    This negotiator uses the Boulware time-based concession strategy, which
+    concedes slowly at first and more rapidly near the deadline. LLM-generated
+    persuasive text accompanies each offer.
+
+    Args:
+        provider: The LLM provider (default: "ollama").
+        model: The model name (default: "llama3.1:8b").
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API.
+        temperature: Sampling temperature for the LLM (default: 0.7).
+        max_tokens: Maximum tokens in the LLM response (default: 512).
+        system_prompt: Custom system prompt for text generation.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to the base negotiator.
+    """
+
+    def __init__(
+        self,
+        provider: str = "ollama",
+        model: str = "llama3.1:8b",
+        *,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        system_prompt: str | None = None,
+        llm_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        from negmas.gb.negotiators.timebased import BoulwareTBNegotiator
+
+        base_negotiator = BoulwareTBNegotiator(**kwargs)
+        super().__init__(
+            base_negotiator=base_negotiator,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+        )
+
+
+class LLMConcederTBNegotiator(LLMMetaNegotiator):
+    """LLM-wrapped ConcederTBNegotiator.
+
+    This negotiator uses the Conceder time-based strategy, which concedes
+    rapidly at first and slows down near the deadline. LLM-generated text
+    accompanies each offer.
+
+    Args:
+        provider: The LLM provider (default: "ollama").
+        model: The model name (default: "llama3.1:8b").
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API.
+        temperature: Sampling temperature for the LLM (default: 0.7).
+        max_tokens: Maximum tokens in the LLM response (default: 512).
+        system_prompt: Custom system prompt for text generation.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to the base negotiator.
+    """
+
+    def __init__(
+        self,
+        provider: str = "ollama",
+        model: str = "llama3.1:8b",
+        *,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        system_prompt: str | None = None,
+        llm_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        from negmas.gb.negotiators.timebased import ConcederTBNegotiator
+
+        base_negotiator = ConcederTBNegotiator(**kwargs)
+        super().__init__(
+            base_negotiator=base_negotiator,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+        )
+
+
+class LLMLinearTBNegotiator(LLMMetaNegotiator):
+    """LLM-wrapped LinearTBNegotiator.
+
+    This negotiator uses a linear time-based concession strategy, conceding
+    at a constant rate over time. LLM-generated text accompanies each offer.
+
+    Args:
+        provider: The LLM provider (default: "ollama").
+        model: The model name (default: "llama3.1:8b").
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API.
+        temperature: Sampling temperature for the LLM (default: 0.7).
+        max_tokens: Maximum tokens in the LLM response (default: 512).
+        system_prompt: Custom system prompt for text generation.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to the base negotiator.
+    """
+
+    def __init__(
+        self,
+        provider: str = "ollama",
+        model: str = "llama3.1:8b",
+        *,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        system_prompt: str | None = None,
+        llm_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        from negmas.gb.negotiators.timebased import LinearTBNegotiator
+
+        base_negotiator = LinearTBNegotiator(**kwargs)
+        super().__init__(
+            base_negotiator=base_negotiator,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+        )
+
+
+class LLMTimeBasedConcedingNegotiator(LLMMetaNegotiator):
+    """LLM-wrapped TimeBasedConcedingNegotiator.
+
+    A configurable time-based conceding negotiator with LLM-generated text
+    accompanying each offer.
+
+    Args:
+        provider: The LLM provider (default: "ollama").
+        model: The model name (default: "llama3.1:8b").
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API.
+        temperature: Sampling temperature for the LLM (default: 0.7).
+        max_tokens: Maximum tokens in the LLM response (default: 512).
+        system_prompt: Custom system prompt for text generation.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to the base negotiator.
+    """
+
+    def __init__(
+        self,
+        provider: str = "ollama",
+        model: str = "llama3.1:8b",
+        *,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        system_prompt: str | None = None,
+        llm_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        from negmas.gb.negotiators.timebased import TimeBasedConcedingNegotiator
+
+        base_negotiator = TimeBasedConcedingNegotiator(**kwargs)
+        super().__init__(
+            base_negotiator=base_negotiator,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+        )
+
+
+class LLMTimeBasedNegotiator(LLMMetaNegotiator):
+    """LLM-wrapped TimeBasedNegotiator.
+
+    A general time-based negotiator with LLM-generated text accompanying
+    each offer.
+
+    Args:
+        provider: The LLM provider (default: "ollama").
+        model: The model name (default: "llama3.1:8b").
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API.
+        temperature: Sampling temperature for the LLM (default: 0.7).
+        max_tokens: Maximum tokens in the LLM response (default: 512).
+        system_prompt: Custom system prompt for text generation.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to the base negotiator.
+    """
+
+    def __init__(
+        self,
+        provider: str = "ollama",
+        model: str = "llama3.1:8b",
+        *,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        system_prompt: str | None = None,
+        llm_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        from negmas.gb.negotiators.timebased import TimeBasedNegotiator
+
+        base_negotiator = TimeBasedNegotiator(**kwargs)
+        super().__init__(
+            base_negotiator=base_negotiator,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+        )
+
+
+class LLMNiceNegotiator(LLMMetaNegotiator):
+    """LLM-wrapped NiceNegotiator.
+
+    A cooperative negotiator that makes nice offers with LLM-generated
+    persuasive text.
+
+    Args:
+        provider: The LLM provider (default: "ollama").
+        model: The model name (default: "llama3.1:8b").
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API.
+        temperature: Sampling temperature for the LLM (default: 0.7).
+        max_tokens: Maximum tokens in the LLM response (default: 512).
+        system_prompt: Custom system prompt for text generation.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to the base negotiator.
+    """
+
+    def __init__(
+        self,
+        provider: str = "ollama",
+        model: str = "llama3.1:8b",
+        *,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        system_prompt: str | None = None,
+        llm_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        from negmas.gb.negotiators.nice import NiceNegotiator
+
+        base_negotiator = NiceNegotiator(**kwargs)
+        super().__init__(
+            base_negotiator=base_negotiator,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+        )
+
+
+class LLMToughNegotiator(LLMMetaNegotiator):
+    """LLM-wrapped ToughNegotiator.
+
+    An aggressive negotiator that makes tough offers with LLM-generated text.
+
+    Args:
+        provider: The LLM provider (default: "ollama").
+        model: The model name (default: "llama3.1:8b").
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API.
+        temperature: Sampling temperature for the LLM (default: 0.7).
+        max_tokens: Maximum tokens in the LLM response (default: 512).
+        system_prompt: Custom system prompt for text generation.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to the base negotiator.
+    """
+
+    def __init__(
+        self,
+        provider: str = "ollama",
+        model: str = "llama3.1:8b",
+        *,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        system_prompt: str | None = None,
+        llm_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        from negmas.gb.negotiators.tough import ToughNegotiator
+
+        base_negotiator = ToughNegotiator(**kwargs)
+        super().__init__(
+            base_negotiator=base_negotiator,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+        )
+
+
+class LLMNaiveTitForTatNegotiator(LLMMetaNegotiator):
+    """LLM-wrapped NaiveTitForTatNegotiator.
+
+    A tit-for-tat negotiator that mirrors the opponent's behavior with
+    LLM-generated text.
+
+    Args:
+        provider: The LLM provider (default: "ollama").
+        model: The model name (default: "llama3.1:8b").
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API.
+        temperature: Sampling temperature for the LLM (default: 0.7).
+        max_tokens: Maximum tokens in the LLM response (default: 512).
+        system_prompt: Custom system prompt for text generation.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to the base negotiator.
+    """
+
+    def __init__(
+        self,
+        provider: str = "ollama",
+        model: str = "llama3.1:8b",
+        *,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        system_prompt: str | None = None,
+        llm_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        from negmas.gb.negotiators.titfortat import NaiveTitForTatNegotiator
+
+        base_negotiator = NaiveTitForTatNegotiator(**kwargs)
+        super().__init__(
+            base_negotiator=base_negotiator,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+        )
+
+
+class LLMRandomNegotiator(LLMMetaNegotiator):
+    """LLM-wrapped RandomNegotiator.
+
+    A negotiator that makes random offers with LLM-generated text. Useful
+    for testing and baselines.
+
+    Args:
+        provider: The LLM provider (default: "ollama").
+        model: The model name (default: "llama3.1:8b").
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API.
+        temperature: Sampling temperature for the LLM (default: 0.7).
+        max_tokens: Maximum tokens in the LLM response (default: 512).
+        system_prompt: Custom system prompt for text generation.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to the base negotiator.
+    """
+
+    def __init__(
+        self,
+        provider: str = "ollama",
+        model: str = "llama3.1:8b",
+        *,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        system_prompt: str | None = None,
+        llm_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        from negmas.gb.negotiators.randneg import RandomNegotiator
+
+        base_negotiator = RandomNegotiator(**kwargs)
+        super().__init__(
+            base_negotiator=base_negotiator,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+        )
+
+
+class LLMRandomAlwaysAcceptingNegotiator(LLMMetaNegotiator):
+    """LLM-wrapped RandomAlwaysAcceptingNegotiator.
+
+    A negotiator that makes random offers but always accepts with LLM-generated
+    text. Useful for testing.
+
+    Args:
+        provider: The LLM provider (default: "ollama").
+        model: The model name (default: "llama3.1:8b").
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API.
+        temperature: Sampling temperature for the LLM (default: 0.7).
+        max_tokens: Maximum tokens in the LLM response (default: 512).
+        system_prompt: Custom system prompt for text generation.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to the base negotiator.
+    """
+
+    def __init__(
+        self,
+        provider: str = "ollama",
+        model: str = "llama3.1:8b",
+        *,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        system_prompt: str | None = None,
+        llm_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        from negmas.gb.negotiators.randneg import RandomAlwaysAcceptingNegotiator
+
+        base_negotiator = RandomAlwaysAcceptingNegotiator(**kwargs)
+        super().__init__(
+            base_negotiator=base_negotiator,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+        )
+
+
+class LLMCABNegotiator(LLMMetaNegotiator):
+    """LLM-wrapped CABNegotiator.
+
+    Curve-based Aspiration Boulware negotiator with LLM-generated text.
+
+    Args:
+        provider: The LLM provider (default: "ollama").
+        model: The model name (default: "llama3.1:8b").
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API.
+        temperature: Sampling temperature for the LLM (default: 0.7).
+        max_tokens: Maximum tokens in the LLM response (default: 512).
+        system_prompt: Custom system prompt for text generation.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to the base negotiator.
+    """
+
+    def __init__(
+        self,
+        provider: str = "ollama",
+        model: str = "llama3.1:8b",
+        *,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        system_prompt: str | None = None,
+        llm_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        from negmas.gb.negotiators.cab import CABNegotiator
+
+        base_negotiator = CABNegotiator(**kwargs)
+        super().__init__(
+            base_negotiator=base_negotiator,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+        )
+
+
+class LLMCANNegotiator(LLMMetaNegotiator):
+    """LLM-wrapped CANNegotiator.
+
+    Curve-based Aspiration Nice negotiator with LLM-generated text.
+
+    Args:
+        provider: The LLM provider (default: "ollama").
+        model: The model name (default: "llama3.1:8b").
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API.
+        temperature: Sampling temperature for the LLM (default: 0.7).
+        max_tokens: Maximum tokens in the LLM response (default: 512).
+        system_prompt: Custom system prompt for text generation.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to the base negotiator.
+    """
+
+    def __init__(
+        self,
+        provider: str = "ollama",
+        model: str = "llama3.1:8b",
+        *,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        system_prompt: str | None = None,
+        llm_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        from negmas.gb.negotiators.cab import CANNegotiator
+
+        base_negotiator = CANNegotiator(**kwargs)
+        super().__init__(
+            base_negotiator=base_negotiator,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+        )
+
+
+class LLMCARNegotiator(LLMMetaNegotiator):
+    """LLM-wrapped CARNegotiator.
+
+    Curve-based Aspiration Random negotiator with LLM-generated text.
+
+    Args:
+        provider: The LLM provider (default: "ollama").
+        model: The model name (default: "llama3.1:8b").
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API.
+        temperature: Sampling temperature for the LLM (default: 0.7).
+        max_tokens: Maximum tokens in the LLM response (default: 512).
+        system_prompt: Custom system prompt for text generation.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to the base negotiator.
+    """
+
+    def __init__(
+        self,
+        provider: str = "ollama",
+        model: str = "llama3.1:8b",
+        *,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        system_prompt: str | None = None,
+        llm_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        from negmas.gb.negotiators.cab import CARNegotiator
+
+        base_negotiator = CARNegotiator(**kwargs)
+        super().__init__(
+            base_negotiator=base_negotiator,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+        )
+
+
+class LLMMiCRONegotiator(LLMMetaNegotiator):
+    """LLM-wrapped MiCRONegotiator.
+
+    MiCRO (Mixed strategy with CRoss Offers) negotiator with LLM-generated text.
+
+    Args:
+        provider: The LLM provider (default: "ollama").
+        model: The model name (default: "llama3.1:8b").
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API.
+        temperature: Sampling temperature for the LLM (default: 0.7).
+        max_tokens: Maximum tokens in the LLM response (default: 512).
+        system_prompt: Custom system prompt for text generation.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to the base negotiator.
+    """
+
+    def __init__(
+        self,
+        provider: str = "ollama",
+        model: str = "llama3.1:8b",
+        *,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        system_prompt: str | None = None,
+        llm_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        from negmas.gb.negotiators.micro import MiCRONegotiator
+
+        base_negotiator = MiCRONegotiator(**kwargs)
+        super().__init__(
+            base_negotiator=base_negotiator,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+        )
+
+
+class LLMFastMiCRONegotiator(LLMMetaNegotiator):
+    """LLM-wrapped FastMiCRONegotiator.
+
+    Fast version of MiCRO negotiator with LLM-generated text.
+
+    Args:
+        provider: The LLM provider (default: "ollama").
+        model: The model name (default: "llama3.1:8b").
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API.
+        temperature: Sampling temperature for the LLM (default: 0.7).
+        max_tokens: Maximum tokens in the LLM response (default: 512).
+        system_prompt: Custom system prompt for text generation.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to the base negotiator.
+    """
+
+    def __init__(
+        self,
+        provider: str = "ollama",
+        model: str = "llama3.1:8b",
+        *,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        system_prompt: str | None = None,
+        llm_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        from negmas.gb.negotiators.micro import FastMiCRONegotiator
+
+        base_negotiator = FastMiCRONegotiator(**kwargs)
+        super().__init__(
+            base_negotiator=base_negotiator,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+        )
+
+
+class LLMUtilBasedNegotiator(LLMMetaNegotiator):
+    """LLM-wrapped UtilBasedNegotiator.
+
+    Utility-based negotiator with LLM-generated text.
+
+    Args:
+        provider: The LLM provider (default: "ollama").
+        model: The model name (default: "llama3.1:8b").
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API.
+        temperature: Sampling temperature for the LLM (default: 0.7).
+        max_tokens: Maximum tokens in the LLM response (default: 512).
+        system_prompt: Custom system prompt for text generation.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to the base negotiator.
+    """
+
+    def __init__(
+        self,
+        provider: str = "ollama",
+        model: str = "llama3.1:8b",
+        *,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        system_prompt: str | None = None,
+        llm_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        from negmas.gb.negotiators.utilbased import UtilBasedNegotiator
+
+        base_negotiator = UtilBasedNegotiator(**kwargs)
+        super().__init__(
+            base_negotiator=base_negotiator,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+        )
+
+
+class LLMWARNegotiator(LLMMetaNegotiator):
+    """LLM-wrapped WARNegotiator.
+
+    War negotiator (aggressive) with LLM-generated text.
+
+    Args:
+        provider: The LLM provider (default: "ollama").
+        model: The model name (default: "llama3.1:8b").
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API.
+        temperature: Sampling temperature for the LLM (default: 0.7).
+        max_tokens: Maximum tokens in the LLM response (default: 512).
+        system_prompt: Custom system prompt for text generation.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to the base negotiator.
+    """
+
+    def __init__(
+        self,
+        provider: str = "ollama",
+        model: str = "llama3.1:8b",
+        *,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        system_prompt: str | None = None,
+        llm_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        from negmas.gb.negotiators.war import WARNegotiator
+
+        base_negotiator = WARNegotiator(**kwargs)
+        super().__init__(
+            base_negotiator=base_negotiator,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+        )
+
+
+class LLMWANNegotiator(LLMMetaNegotiator):
+    """LLM-wrapped WANNegotiator.
+
+    War-Aspiration-Nice negotiator with LLM-generated text.
+
+    Args:
+        provider: The LLM provider (default: "ollama").
+        model: The model name (default: "llama3.1:8b").
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API.
+        temperature: Sampling temperature for the LLM (default: 0.7).
+        max_tokens: Maximum tokens in the LLM response (default: 512).
+        system_prompt: Custom system prompt for text generation.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to the base negotiator.
+    """
+
+    def __init__(
+        self,
+        provider: str = "ollama",
+        model: str = "llama3.1:8b",
+        *,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        system_prompt: str | None = None,
+        llm_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        from negmas.gb.negotiators.war import WANNegotiator
+
+        base_negotiator = WANNegotiator(**kwargs)
+        super().__init__(
+            base_negotiator=base_negotiator,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+        )
+
+
+class LLMWABNegotiator(LLMMetaNegotiator):
+    """LLM-wrapped WABNegotiator.
+
+    War-Aspiration-Boulware negotiator with LLM-generated text.
+
+    Args:
+        provider: The LLM provider (default: "ollama").
+        model: The model name (default: "llama3.1:8b").
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API.
+        temperature: Sampling temperature for the LLM (default: 0.7).
+        max_tokens: Maximum tokens in the LLM response (default: 512).
+        system_prompt: Custom system prompt for text generation.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to the base negotiator.
+    """
+
+    def __init__(
+        self,
+        provider: str = "ollama",
+        model: str = "llama3.1:8b",
+        *,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        system_prompt: str | None = None,
+        llm_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        from negmas.gb.negotiators.war import WABNegotiator
+
+        base_negotiator = WABNegotiator(**kwargs)
+        super().__init__(
+            base_negotiator=base_negotiator,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+        )
+
+
+class LLMLimitedOutcomesNegotiator(LLMMetaNegotiator):
+    """LLM-wrapped LimitedOutcomesNegotiator.
+
+    A negotiator that works with a limited set of outcomes, with LLM-generated text.
+
+    Args:
+        provider: The LLM provider (default: "ollama").
+        model: The model name (default: "llama3.1:8b").
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API.
+        temperature: Sampling temperature for the LLM (default: 0.7).
+        max_tokens: Maximum tokens in the LLM response (default: 512).
+        system_prompt: Custom system prompt for text generation.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to the base negotiator.
+    """
+
+    def __init__(
+        self,
+        provider: str = "ollama",
+        model: str = "llama3.1:8b",
+        *,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        system_prompt: str | None = None,
+        llm_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        from negmas.gb.negotiators.limited import LimitedOutcomesNegotiator
+
+        base_negotiator = LimitedOutcomesNegotiator(**kwargs)
+        super().__init__(
+            base_negotiator=base_negotiator,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+        )
+
+
+class LLMLimitedOutcomesAcceptor(LLMMetaNegotiator):
+    """LLM-wrapped LimitedOutcomesAcceptor.
+
+    An acceptor that works with a limited set of outcomes, with LLM-generated text.
+
+    Args:
+        provider: The LLM provider (default: "ollama").
+        model: The model name (default: "llama3.1:8b").
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API.
+        temperature: Sampling temperature for the LLM (default: 0.7).
+        max_tokens: Maximum tokens in the LLM response (default: 512).
+        system_prompt: Custom system prompt for text generation.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to the base negotiator.
+    """
+
+    def __init__(
+        self,
+        provider: str = "ollama",
+        model: str = "llama3.1:8b",
+        *,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        system_prompt: str | None = None,
+        llm_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        from negmas.gb.negotiators.limited import LimitedOutcomesAcceptor
+
+        base_negotiator = LimitedOutcomesAcceptor(**kwargs)
+        super().__init__(
+            base_negotiator=base_negotiator,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+        )
+
+
+class LLMHybridNegotiator(LLMMetaNegotiator):
+    """LLM-wrapped HybridNegotiator.
+
+    A hybrid negotiator that combines multiple strategies using HybridOfferingPolicy
+    and ACNext acceptance policy, with LLM-generated text accompanying each offer.
+
+    Args:
+        provider: The LLM provider (default: "ollama").
+        model: The model name (default: "llama3.1:8b").
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API.
+        temperature: Sampling temperature for the LLM (default: 0.7).
+        max_tokens: Maximum tokens in the LLM response (default: 512).
+        system_prompt: Custom system prompt for text generation.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to the base negotiator.
+            Supports `alpha` and `beta` parameters for the acceptance policy.
+    """
+
+    def __init__(
+        self,
+        provider: str = "ollama",
+        model: str = "llama3.1:8b",
+        *,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+        system_prompt: str | None = None,
+        llm_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        from negmas.gb.negotiators.hybrid import HybridNegotiator
+
+        base_negotiator = HybridNegotiator(**kwargs)
+        super().__init__(
+            base_negotiator=base_negotiator,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+        )

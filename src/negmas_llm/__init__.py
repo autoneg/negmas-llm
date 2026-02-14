@@ -68,7 +68,10 @@ from negmas_llm.tags import (
     TagContext,
     TagFormat,
     TagHandler,
+    get_available_tags,
+    get_tag_documentation,
     get_tag_handler,
+    print_tag_help,
     process_prompt,
     register_tag_handler,
 )
@@ -490,4 +493,7 @@ __all__ = [
     "process_prompt",
     "register_tag_handler",
     "get_tag_handler",
+    "get_available_tags",
+    "get_tag_documentation",
+    "print_tag_help",
 ]

@@ -36,6 +36,97 @@ def _dedent(text: str) -> str:
 
 
 # =============================================================================
+# Default Prompts for Components
+# =============================================================================
+
+DEFAULT_ACCEPTANCE_SYSTEM_PROMPT = _dedent("""
+    You are an acceptance policy in an automated negotiation.
+    Your role is to decide whether to ACCEPT, REJECT, or END the negotiation
+    based on offers received.
+
+    {{outcome-space}}
+    {{utility-function}}
+    """)
+
+DEFAULT_ACCEPTANCE_RESPONSE_INSTRUCTIONS = _dedent("""
+    ## Response Format
+
+    IMPORTANT: Your response MUST be valid JSON in the following format:
+    {
+        "decision": "accept" | "reject" | "end",
+        "reasoning": "brief explanation of your decision"
+    }
+
+    Where:
+    - "decision": Your decision:
+      - "accept": Accept the current offer
+      - "reject": Reject the offer (a counter-offer will be generated
+        separately)
+      - "end": End the negotiation without agreement
+    - "reasoning": Brief explanation of why you made this decision
+
+    Always respond with ONLY the JSON object, no additional text.
+    """)
+
+DEFAULT_OFFERING_SYSTEM_PROMPT = _dedent("""
+    You are an offering policy in an automated negotiation.
+    Your role is to generate strategic offers that advance your interests
+    while seeking mutually acceptable agreements.
+
+    {{outcome-space}}
+    {{utility-function}}
+    """)
+
+DEFAULT_OFFERING_RESPONSE_INSTRUCTIONS = _dedent("""
+    ## Response Format
+
+    IMPORTANT: Your response MUST be valid JSON in the following format:
+    {
+        "outcome": [value1, value2, ...],
+        "text": "optional message to accompany the offer",
+        "reasoning": "brief explanation of why you chose this offer"
+    }
+
+    Where:
+    - "outcome": Your proposed offer as a list of values matching the
+      issue order
+    - "text": Optional text message to send with the offer
+    - "reasoning": Brief explanation of your strategy
+
+    Always respond with ONLY the JSON object, no additional text.
+    """)
+
+DEFAULT_SUPPORTER_SYSTEM_PROMPT = _dedent("""
+    You are a skilled negotiation communicator. Your role is to generate
+    persuasive, professional text to accompany negotiation actions.
+
+    Your text should:
+    - Be concise but compelling
+    - Support the action being taken
+    - Maintain a professional tone
+    - Build rapport while advancing your position
+
+    Respond with ONLY the text message, no JSON or formatting.
+    """)
+
+DEFAULT_VALIDATOR_PROMPT = _dedent("""
+    You are a negotiation consistency validator. Your role is to check if
+    text messages are consistent with negotiation actions.
+
+    Analyze whether the text accurately represents the action being taken.
+    Report any inconsistencies found.
+
+    Respond in JSON format:
+    {
+        "consistent": true | false,
+        "issues": ["list of inconsistencies if any"],
+        "suggested_text": "corrected text if inconsistent",
+        "suggested_action": "accept" | "reject" | "end"
+    }
+    """)
+
+
+# =============================================================================
 # Base mixin for LLM functionality
 # =============================================================================
 
@@ -279,7 +370,8 @@ class LLMAcceptancePolicy(AcceptancePolicy, LLMComponentMixin):
         api_base: Base URL for the API (useful for local deployments).
         temperature: Sampling temperature for the LLM.
         max_tokens: Maximum tokens in the LLM response.
-        system_prompt: Custom system prompt (overrides build_system_prompt).
+        system_prompt: Custom system prompt. Supports tags like {{outcome-space}}.
+        response_instructions: Custom response format instructions.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
 
     Example:
@@ -306,30 +398,13 @@ class LLMAcceptancePolicy(AcceptancePolicy, LLMComponentMixin):
     llm_kwargs: dict[str, Any] = field(factory=dict)
     _conversation_history: list[dict[str, str]] = field(factory=list, init=False)
 
-    # Component-specific fields
-    _custom_system_prompt: str | None = field(default=None)
+    # Configurable prompts
+    system_prompt: str = field(default=DEFAULT_ACCEPTANCE_SYSTEM_PROMPT)
+    response_instructions: str = field(default=DEFAULT_ACCEPTANCE_RESPONSE_INSTRUCTIONS)
 
     def format_response_instructions(self) -> str:
         """Format the response instructions for acceptance decisions."""
-        return _dedent("""
-            ## Response Format
-
-            IMPORTANT: Your response MUST be valid JSON in the following format:
-            {
-                "decision": "accept" | "reject" | "end",
-                "reasoning": "brief explanation of your decision"
-            }
-
-            Where:
-            - "decision": Your decision:
-              - "accept": Accept the current offer
-              - "reject": Reject the offer (a counter-offer will be generated
-                separately)
-              - "end": End the negotiation without agreement
-            - "reasoning": Brief explanation of why you made this decision
-
-            Always respond with ONLY the JSON object, no additional text.
-            """)
+        return self.response_instructions
 
     def build_system_prompt(self, state: GBState) -> str:
         """Build the system prompt for acceptance decisions.
@@ -342,22 +417,8 @@ class LLMAcceptancePolicy(AcceptancePolicy, LLMComponentMixin):
         Returns:
             The system prompt string.
         """
-        if self._custom_system_prompt:
-            return self._custom_system_prompt
-
-        outcome_space_info = self.format_outcome_space(self.negotiator)
-        own_ufun_info = self.format_own_ufun(self.negotiator)
-        response_instructions = self.format_response_instructions()
-
-        return _dedent(f"""
-            You are an acceptance policy in an automated negotiation.
-            Your role is to decide whether to ACCEPT, REJECT, or END the negotiation
-            based on offers received.
-
-            {outcome_space_info}
-            {own_ufun_info}
-            {response_instructions}
-            """)
+        # Combine system prompt with response instructions
+        return f"{self.system_prompt}\n\n{self.response_instructions}"
 
     def build_user_message(
         self,
@@ -463,7 +524,8 @@ class LLMOfferingPolicy(OfferingPolicy, LLMComponentMixin):
         api_base: Base URL for the API (useful for local deployments).
         temperature: Sampling temperature for the LLM.
         max_tokens: Maximum tokens in the LLM response.
-        system_prompt: Custom system prompt (overrides build_system_prompt).
+        system_prompt: Custom system prompt. Supports tags like {{outcome-space}}.
+        response_instructions: Custom response format instructions.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
 
     Example:
@@ -490,29 +552,13 @@ class LLMOfferingPolicy(OfferingPolicy, LLMComponentMixin):
     llm_kwargs: dict[str, Any] = field(factory=dict)
     _conversation_history: list[dict[str, str]] = field(factory=list, init=False)
 
-    # Component-specific fields
-    _custom_system_prompt: str | None = field(default=None)
+    # Configurable prompts
+    system_prompt: str = field(default=DEFAULT_OFFERING_SYSTEM_PROMPT)
+    response_instructions: str = field(default=DEFAULT_OFFERING_RESPONSE_INSTRUCTIONS)
 
     def format_response_instructions(self) -> str:
         """Format the response instructions for offer generation."""
-        return _dedent("""
-            ## Response Format
-
-            IMPORTANT: Your response MUST be valid JSON in the following format:
-            {
-                "outcome": [value1, value2, ...],
-                "text": "optional message to accompany the offer",
-                "reasoning": "brief explanation of why you chose this offer"
-            }
-
-            Where:
-            - "outcome": Your proposed offer as a list of values matching the
-              issue order
-            - "text": Optional text message to send with the offer
-            - "reasoning": Brief explanation of your strategy
-
-            Always respond with ONLY the JSON object, no additional text.
-            """)
+        return self.response_instructions
 
     def build_system_prompt(self, state: GBState) -> str:
         """Build the system prompt for offer generation.
@@ -525,22 +571,8 @@ class LLMOfferingPolicy(OfferingPolicy, LLMComponentMixin):
         Returns:
             The system prompt string.
         """
-        if self._custom_system_prompt:
-            return self._custom_system_prompt
-
-        outcome_space_info = self.format_outcome_space(self.negotiator)
-        own_ufun_info = self.format_own_ufun(self.negotiator)
-        response_instructions = self.format_response_instructions()
-
-        return _dedent(f"""
-            You are an offering policy in an automated negotiation.
-            Your role is to generate strategic offers that advance your interests
-            while seeking mutually acceptable agreements.
-
-            {outcome_space_info}
-            {own_ufun_info}
-            {response_instructions}
-            """)
+        # Combine system prompt with response instructions
+        return f"{self.system_prompt}\n\n{self.response_instructions}"
 
     def build_user_message(self, state: GBState, dest: str | None) -> str:
         """Build the user message for offer generation.
@@ -642,6 +674,7 @@ class LLMNegotiationSupporter(GBComponent, LLMComponentMixin):
         api_base: Base URL for the API (useful for local deployments).
         temperature: Sampling temperature for the LLM.
         max_tokens: Maximum tokens in the LLM response.
+        system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
 
     Example:
@@ -672,23 +705,15 @@ class LLMNegotiationSupporter(GBComponent, LLMComponentMixin):
     llm_kwargs: dict[str, Any] = field(factory=dict)
     _conversation_history: list[dict[str, str]] = field(factory=list, init=False)
 
+    # Configurable prompt
+    system_prompt: str = field(default=DEFAULT_SUPPORTER_SYSTEM_PROMPT)
+
     # Store generated text for retrieval
     _last_generated_text: str | None = field(default=None, init=False)
 
     def build_system_prompt(self) -> str:
         """Build the system prompt for text generation."""
-        return _dedent("""
-            You are a skilled negotiation communicator. Your role is to generate
-            persuasive, professional text to accompany negotiation actions.
-
-            Your text should:
-            - Be concise but compelling
-            - Support the action being taken
-            - Maintain a professional tone
-            - Build rapport while advancing your position
-
-            Respond with ONLY the text message, no JSON or formatting.
-            """)
+        return self.system_prompt
 
     def generate_offer_text(
         self,
@@ -834,6 +859,7 @@ class LLMValidator(GBComponent, LLMComponentMixin):
         api_base: Base URL for the API (useful for local deployments).
         temperature: Sampling temperature for the LLM.
         max_tokens: Maximum tokens in the LLM response.
+        validation_prompt: Custom validation prompt.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
 
     Example:
@@ -868,26 +894,15 @@ class LLMValidator(GBComponent, LLMComponentMixin):
         default="validate_only"
     )
 
+    # Configurable prompt
+    validation_prompt: str = field(default=DEFAULT_VALIDATOR_PROMPT)
+
     # Store validation results
     _last_validation_result: dict[str, Any] | None = field(default=None, init=False)
 
     def build_validation_prompt(self) -> str:
         """Build the system prompt for validation."""
-        return _dedent("""
-            You are a negotiation consistency validator. Your role is to check if
-            text messages are consistent with negotiation actions.
-
-            Analyze whether the text accurately represents the action being taken.
-            Report any inconsistencies found.
-
-            Respond in JSON format:
-            {
-                "consistent": true | false,
-                "issues": ["list of inconsistencies if any"],
-                "suggested_text": "corrected text if inconsistent",
-                "suggested_action": "accept" | "reject" | "end"
-            }
-            """)
+        return self.validation_prompt
 
     def validate_response(
         self,

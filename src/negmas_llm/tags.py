@@ -40,6 +40,9 @@ __all__ = [
     "process_prompt",
     "register_tag_handler",
     "get_tag_handler",
+    "get_available_tags",
+    "get_tag_documentation",
+    "print_tag_help",
 ]
 
 
@@ -1454,6 +1457,155 @@ def _handle_current_state(ctx: TagContext) -> str:
             lines.append(f"  Agreement: {info['agreement']}")
 
         return "\n".join(lines)
+
+
+# =============================================================================
+# Tag discovery and documentation functions
+# =============================================================================
+
+
+def get_available_tags() -> list[str]:
+    """Get a list of all available tag names.
+
+    Returns a list of tag names that can be used in prompts.
+    Tags are used with the syntax: {{tag_name}} or {{tag_name:format(params)}}
+
+    Returns:
+        List of tag name strings.
+
+    Example:
+        >>> tags = get_available_tags()
+        >>> print(tags[:3])
+        ['outcome-space', 'utility-function', 'opponent-utility-function']
+    """
+    return [tag.value for tag in Tag]
+
+
+def get_tag_documentation(tag_name: str) -> str | None:
+    """Get documentation for a specific tag.
+
+    Args:
+        tag_name: The name of the tag (e.g., "outcome-space", "utility").
+
+    Returns:
+        Markdown-formatted documentation string, or None if tag not found.
+
+    Example:
+        >>> docs = get_tag_documentation("utility")
+        >>> print(docs)  # Prints markdown documentation for the utility tag
+    """
+    docs = Tag.available_tags()
+    return docs.get(tag_name)
+
+
+def print_tag_help(tag_name: str | None = None) -> None:
+    """Print formatted help for tags.
+
+    If tag_name is provided, prints documentation for that specific tag.
+    Otherwise, prints a summary of all available tags.
+
+    Args:
+        tag_name: Optional tag name to get help for. If None, prints all tags.
+
+    Example:
+        >>> print_tag_help()  # Prints summary of all tags
+        >>> print_tag_help("utility")  # Prints detailed help for utility tag
+    """
+    if tag_name is not None:
+        # Print specific tag documentation
+        docs = get_tag_documentation(tag_name)
+        if docs is None:
+            print(f"Unknown tag: {tag_name}")
+            print(f"Available tags: {', '.join(get_available_tags())}")
+        else:
+            print(docs)
+    else:
+        # Print summary of all tags
+        print("Available Tags for LLM Prompts")
+        print("=" * 40)
+        print()
+        print(
+            "Tags are used with the syntax: {{tag_name}} or {{tag_name:format(params)}}"
+        )
+        print()
+        print("Formats: 'text' (default), 'json'")
+        print()
+
+        # Group tags by category
+        context_tags = [
+            Tag.OUTCOME_SPACE,
+            Tag.UTILITY_FUNCTION,
+            Tag.OPPONENT_UTILITY_FUNCTION,
+            Tag.NMI,
+            Tag.CURRENT_STATE,
+        ]
+        reserved_tags = [Tag.RESERVED_VALUE, Tag.OPPONENT_RESERVED_VALUE]
+        offer_tags = [
+            Tag.MY_LAST_OFFER,
+            Tag.MY_FIRST_OFFER,
+            Tag.OPPONENT_LAST_OFFER,
+            Tag.OPPONENT_FIRST_OFFER,
+        ]
+        history_tags = [
+            Tag.PARTNER_OFFERS,
+            Tag.HISTORY,
+            Tag.TRACE,
+            Tag.EXTENDED_TRACE,
+            Tag.FULL_TRACE,
+        ]
+        utility_tags = [Tag.UTILITY]
+
+        print("Context Tags (no parameters):")
+        for tag in context_tags:
+            print(f"  {{{{{tag.value}}}}}  - {_get_short_description(tag.value)}")
+
+        print()
+        print("Reserved Value Tags:")
+        for tag in reserved_tags:
+            print(f"  {{{{{tag.value}}}}}  - {_get_short_description(tag.value)}")
+
+        print()
+        print("Offer Reference Tags:")
+        for tag in offer_tags:
+            print(f"  {{{{{tag.value}}}}}  - {_get_short_description(tag.value)}")
+
+        print()
+        print("History Tags (optional k parameter):")
+        for tag in history_tags:
+            print(f"  {{{{{tag.value}}}}}  - {_get_short_description(tag.value)}")
+
+        print()
+        print("Utility Computation:")
+        for tag in utility_tags:
+            print(f"  {{{{{tag.value}}}}}  - {_get_short_description(tag.value)}")
+
+        print()
+        print("Use get_tag_documentation(tag_name) or print_tag_help(tag_name)")
+        print("for detailed documentation on a specific tag.")
+
+
+def _get_short_description(tag_name: str) -> str:
+    """Get a short one-line description for a tag."""
+    descriptions = {
+        "outcome-space": "The negotiation outcome space definition",
+        "utility-function": "Your utility function",
+        "opponent-utility-function": "Opponent's utility function (if known)",
+        "nmi": "Negotiation mechanism interface info",
+        "current-state": "Current negotiation state",
+        "reserved-value": "Your walk-away point",
+        "opponent-reserved-value": "Opponent's walk-away point (if known)",
+        "my-last-offer": "Your most recent offer",
+        "my-first-offer": "Your first offer",
+        "opponent-last-offer": "Opponent's most recent offer",
+        "opponent-first-offer": "Opponent's first offer",
+        "partner-offers": "List of opponent offers",
+        "history": "Negotiation history (who offered what)",
+        "trace": "Basic negotiation trace",
+        "extended-trace": "Trace with response types",
+        "full-trace": "Complete trace with all details",
+        "utility": "Compute utility for an outcome",
+    }
+    return descriptions.get(tag_name, "No description available")
 
 
 # =============================================================================
