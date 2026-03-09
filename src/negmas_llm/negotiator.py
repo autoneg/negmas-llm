@@ -19,6 +19,7 @@ from negmas.preferences import BaseUtilityFunction
 from negmas.sao import ResponseType, SAOResponse, SAOState
 from negmas.sao.negotiators.base import SAOCallNegotiator
 
+from negmas_llm.common import DEFAULT_MODELS
 from negmas_llm.tags import process_prompt as _process_prompt
 
 if TYPE_CHECKING:
@@ -1306,14 +1307,14 @@ class OllamaNegotiator(LLMNegotiator):
     """LLM Negotiator using Ollama for local model inference.
 
     Args:
-        model: Ollama model name (default: "llama3.2").
+        model: Ollama model name (default: DEFAULT_MODELS["ollama"]).
         api_base: Ollama server URL (default: "http://localhost:11434").
         **kwargs: Additional arguments passed to LLMNegotiator.
     """
 
     def __init__(
         self,
-        model: str = "llama3.2",
+        model: str = DEFAULT_MODELS.get("ollama", "qwen3:4b-instruct"),
         *,
         api_base: str = "http://localhost:11434",
         **kwargs: Any,
