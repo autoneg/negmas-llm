@@ -985,7 +985,10 @@ def _format_linear_additive_ufun(ufun: Any, negotiator: Any) -> str:
         # Fallback for non-linear-additive functions
         return str(ufun)
 
-    lines.append("**Issue Weights and Value Utilities:**")
+    lines.append("**How to calculate your utility for an outcome:**")
+    lines.append("Total utility = sum of (contribution from each issue)")
+    lines.append("")
+    lines.append("For each issue below, find your value's contribution, then sum them.")
     lines.append("")
 
     # Get issue names from outcome space if available
@@ -1001,28 +1004,60 @@ def _format_linear_additive_ufun(ufun: Any, negotiator: Any) -> str:
             issue_names.append(f"Issue {i}")
             issue_values_list.append([])
 
-    # Format each issue
+    # Format each issue with WEIGHTED utility contributions
     for i, (name, weight, vfun) in enumerate(
         zip(issue_names, weights, values, strict=False)
     ):
         lines.append(f"**{name}** (weight: {weight:.3f})")
+        lines.append("Value → Contribution to total utility:")
 
-        # Try to get value utilities
+        # Try to get value utilities (WEIGHTED)
         if i < len(issue_values_list) and issue_values_list[i]:
             value_utils = []
             for val in issue_values_list[i]:
                 try:
-                    u = vfun(val)
-                    value_utils.append(f"  - {val}: utility = {u:.3f}")
+                    raw_u = vfun(val)
+                    weighted_u = weight * raw_u
+                    value_utils.append(f"  - {val} → +{weighted_u:.3f}")
                 except Exception:
-                    value_utils.append(f"  - {val}: utility = ?")
+                    value_utils.append(f"  - {val} → ?")
             lines.extend(value_utils)
+        lines.append("")
+
+    # Add example calculation
+    if issue_values_list and all(issue_values_list):
+        # Use max values as example
+        example_outcome = []
+        example_contributions = []
+        for vals, weight, vfun in zip(issue_values_list, weights, values, strict=False):
+            max_val = max(vals)
+            example_outcome.append(str(max_val))
+            try:
+                contrib = weight * vfun(max_val)
+                example_contributions.append(f"{contrib:.3f}")
+            except Exception:
+                example_contributions.append("?")
+
+        total = sum(
+            weights[i] * values[i](max(issue_values_list[i]))
+            for i in range(len(weights))
+            if issue_values_list[i]
+        )
+        lines.append("**Example calculation:**")
+        outcome_str = ", ".join(
+            f"{name}={val}"
+            for name, val in zip(issue_names, example_outcome, strict=False)
+        )
+        lines.append(f"Outcome ({outcome_str}):")
+        lines.append(
+            f"  Total utility = {' + '.join(example_contributions)} = {total:.3f}"
+        )
         lines.append("")
 
     # Add reserved value prominently
     if reserved is not None:
         lines.append(f"**RESERVED VALUE (minimum acceptable): {reserved:.3f}**")
-        lines.append("(NEVER accept or offer anything with utility <= this value)")
+        lines.append("NEVER accept or offer anything with utility <= this value!")
 
     return "\n".join(lines)
 

@@ -108,24 +108,14 @@ _SAOSTATE_DOCSTRING = _dedent("""
     """)
 
 _UFUN_DOCSTRING = _dedent("""
-    Your utility function is a **Linear Additive Utility Function**. This means:
+    Your utility function tells you how much you value each possible outcome.
+    The table below shows the **contribution** each value adds to your total
+    utility. Simply **sum the contributions** for all issues to get total utility.
 
-    1. **How it works**: Your total utility for an outcome is calculated as:
-       `utility = sum(weight[i] * value_utility[i] for each issue i)`
-
-    2. **Weights**: Each issue has a weight indicating its relative importance.
-       Higher weight = more important issue for you.
-
-    3. **Value Utilities**: For each issue, different values give different utilities.
-       The utility function below shows the utility you get from each value.
-
-    4. **reserved_value**: This is your ABSOLUTE MINIMUM acceptable utility.
-       - NEVER accept an offer with utility <= reserved_value
-       - NEVER make an offer that gives you utility <= reserved_value
-       - If no agreement above reserved_value is possible, walk away
-
-    5. **Strategy**: To maximize utility, prioritize issues with higher weights
-       and push for values that give you higher value utilities.
+    **reserved_value**: Your ABSOLUTE MINIMUM acceptable utility.
+    - NEVER accept an offer with utility <= reserved_value
+    - NEVER make an offer that gives you utility <= reserved_value
+    - If no agreement above reserved_value is possible, walk away
     """)
 
 # =============================================================================
