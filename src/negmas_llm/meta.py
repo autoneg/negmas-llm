@@ -97,6 +97,9 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         api_base: Base URL for the API (useful for local deployments).
         temperature: Sampling temperature for the LLM (default: 0.7).
         max_tokens: Maximum tokens in the LLM response (default: 512).
+        verbose: If True, print LLM prompts and responses to stdout. Useful for
+            debugging and understanding the LLM's text generation process.
+            Default is False.
         system_prompt: Custom system prompt for text generation.
             If not provided, a default prompt focused on generating
             persuasive negotiation messages is used.
@@ -132,6 +135,7 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -150,6 +154,7 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         self.api_base = api_base
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.verbose = verbose
         self._custom_system_prompt = system_prompt
         self.llm_kwargs = llm_kwargs or {}
 
@@ -385,10 +390,30 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         if self.api_base:
             kwargs["api_base"] = self.api_base
 
+        # Print prompt if verbose mode is enabled
+        if self.verbose:
+            print("\n" + "=" * 80)
+            print(f"LLM PROMPT ({self.provider}/{self.model})")
+            print("=" * 80)
+            for msg in processed_messages:
+                print(f"\n[{msg['role'].upper()}]")
+                print(msg["content"])
+            print("=" * 80 + "\n")
+
         response = litellm.completion(**kwargs)
         model_response = cast(ModelResponse, response)
         choices = cast(list["Choices"], model_response.choices)
-        return choices[0].message.content or ""
+        response_text = choices[0].message.content or ""
+
+        # Print response if verbose mode is enabled
+        if self.verbose:
+            print("\n" + "=" * 80)
+            print(f"LLM RESPONSE ({self.provider}/{self.model})")
+            print("=" * 80)
+            print(response_text)
+            print("=" * 80 + "\n")
+
+        return response_text
 
     def _parse_text_response(self, response_text: str) -> str:
         """Parse the LLM response to extract the text message.
@@ -502,6 +527,7 @@ class LLMAspirationNegotiator(LLMMetaNegotiator):
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
         max_tokens: Maximum tokens in the LLM response (default: 512).
+        verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -516,6 +542,7 @@ class LLMAspirationNegotiator(LLMMetaNegotiator):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -531,6 +558,7 @@ class LLMAspirationNegotiator(LLMMetaNegotiator):
             api_base=api_base,
             temperature=temperature,
             max_tokens=max_tokens,
+            verbose=verbose,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -550,6 +578,7 @@ class LLMBoulwareTBNegotiator(LLMMetaNegotiator):
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
         max_tokens: Maximum tokens in the LLM response (default: 512).
+        verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -564,6 +593,7 @@ class LLMBoulwareTBNegotiator(LLMMetaNegotiator):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -579,6 +609,7 @@ class LLMBoulwareTBNegotiator(LLMMetaNegotiator):
             api_base=api_base,
             temperature=temperature,
             max_tokens=max_tokens,
+            verbose=verbose,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -598,6 +629,7 @@ class LLMConcederTBNegotiator(LLMMetaNegotiator):
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
         max_tokens: Maximum tokens in the LLM response (default: 512).
+        verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -612,6 +644,7 @@ class LLMConcederTBNegotiator(LLMMetaNegotiator):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -627,6 +660,7 @@ class LLMConcederTBNegotiator(LLMMetaNegotiator):
             api_base=api_base,
             temperature=temperature,
             max_tokens=max_tokens,
+            verbose=verbose,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -645,6 +679,7 @@ class LLMLinearTBNegotiator(LLMMetaNegotiator):
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
         max_tokens: Maximum tokens in the LLM response (default: 512).
+        verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -659,6 +694,7 @@ class LLMLinearTBNegotiator(LLMMetaNegotiator):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -674,6 +710,7 @@ class LLMLinearTBNegotiator(LLMMetaNegotiator):
             api_base=api_base,
             temperature=temperature,
             max_tokens=max_tokens,
+            verbose=verbose,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -692,6 +729,7 @@ class LLMTimeBasedConcedingNegotiator(LLMMetaNegotiator):
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
         max_tokens: Maximum tokens in the LLM response (default: 512).
+        verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -706,6 +744,7 @@ class LLMTimeBasedConcedingNegotiator(LLMMetaNegotiator):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -721,6 +760,7 @@ class LLMTimeBasedConcedingNegotiator(LLMMetaNegotiator):
             api_base=api_base,
             temperature=temperature,
             max_tokens=max_tokens,
+            verbose=verbose,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -739,6 +779,7 @@ class LLMTimeBasedNegotiator(LLMMetaNegotiator):
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
         max_tokens: Maximum tokens in the LLM response (default: 512).
+        verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -753,6 +794,7 @@ class LLMTimeBasedNegotiator(LLMMetaNegotiator):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -768,6 +810,7 @@ class LLMTimeBasedNegotiator(LLMMetaNegotiator):
             api_base=api_base,
             temperature=temperature,
             max_tokens=max_tokens,
+            verbose=verbose,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -786,6 +829,7 @@ class LLMNiceNegotiator(LLMMetaNegotiator):
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
         max_tokens: Maximum tokens in the LLM response (default: 512).
+        verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -800,6 +844,7 @@ class LLMNiceNegotiator(LLMMetaNegotiator):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -815,6 +860,7 @@ class LLMNiceNegotiator(LLMMetaNegotiator):
             api_base=api_base,
             temperature=temperature,
             max_tokens=max_tokens,
+            verbose=verbose,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -832,6 +878,7 @@ class LLMToughNegotiator(LLMMetaNegotiator):
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
         max_tokens: Maximum tokens in the LLM response (default: 512).
+        verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -846,6 +893,7 @@ class LLMToughNegotiator(LLMMetaNegotiator):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -861,6 +909,7 @@ class LLMToughNegotiator(LLMMetaNegotiator):
             api_base=api_base,
             temperature=temperature,
             max_tokens=max_tokens,
+            verbose=verbose,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -879,6 +928,7 @@ class LLMNaiveTitForTatNegotiator(LLMMetaNegotiator):
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
         max_tokens: Maximum tokens in the LLM response (default: 512).
+        verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -893,6 +943,7 @@ class LLMNaiveTitForTatNegotiator(LLMMetaNegotiator):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -908,6 +959,7 @@ class LLMNaiveTitForTatNegotiator(LLMMetaNegotiator):
             api_base=api_base,
             temperature=temperature,
             max_tokens=max_tokens,
+            verbose=verbose,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -926,6 +978,7 @@ class LLMRandomNegotiator(LLMMetaNegotiator):
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
         max_tokens: Maximum tokens in the LLM response (default: 512).
+        verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -940,6 +993,7 @@ class LLMRandomNegotiator(LLMMetaNegotiator):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -955,6 +1009,7 @@ class LLMRandomNegotiator(LLMMetaNegotiator):
             api_base=api_base,
             temperature=temperature,
             max_tokens=max_tokens,
+            verbose=verbose,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -973,6 +1028,7 @@ class LLMRandomAlwaysAcceptingNegotiator(LLMMetaNegotiator):
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
         max_tokens: Maximum tokens in the LLM response (default: 512).
+        verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -987,6 +1043,7 @@ class LLMRandomAlwaysAcceptingNegotiator(LLMMetaNegotiator):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1002,6 +1059,7 @@ class LLMRandomAlwaysAcceptingNegotiator(LLMMetaNegotiator):
             api_base=api_base,
             temperature=temperature,
             max_tokens=max_tokens,
+            verbose=verbose,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1019,6 +1077,7 @@ class LLMCABNegotiator(LLMMetaNegotiator):
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
         max_tokens: Maximum tokens in the LLM response (default: 512).
+        verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1033,6 +1092,7 @@ class LLMCABNegotiator(LLMMetaNegotiator):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1048,6 +1108,7 @@ class LLMCABNegotiator(LLMMetaNegotiator):
             api_base=api_base,
             temperature=temperature,
             max_tokens=max_tokens,
+            verbose=verbose,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1065,6 +1126,7 @@ class LLMCANNegotiator(LLMMetaNegotiator):
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
         max_tokens: Maximum tokens in the LLM response (default: 512).
+        verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1079,6 +1141,7 @@ class LLMCANNegotiator(LLMMetaNegotiator):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1094,6 +1157,7 @@ class LLMCANNegotiator(LLMMetaNegotiator):
             api_base=api_base,
             temperature=temperature,
             max_tokens=max_tokens,
+            verbose=verbose,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1111,6 +1175,7 @@ class LLMCARNegotiator(LLMMetaNegotiator):
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
         max_tokens: Maximum tokens in the LLM response (default: 512).
+        verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1125,6 +1190,7 @@ class LLMCARNegotiator(LLMMetaNegotiator):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1140,6 +1206,7 @@ class LLMCARNegotiator(LLMMetaNegotiator):
             api_base=api_base,
             temperature=temperature,
             max_tokens=max_tokens,
+            verbose=verbose,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1157,6 +1224,7 @@ class LLMMiCRONegotiator(LLMMetaNegotiator):
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
         max_tokens: Maximum tokens in the LLM response (default: 512).
+        verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1171,6 +1239,7 @@ class LLMMiCRONegotiator(LLMMetaNegotiator):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1186,6 +1255,7 @@ class LLMMiCRONegotiator(LLMMetaNegotiator):
             api_base=api_base,
             temperature=temperature,
             max_tokens=max_tokens,
+            verbose=verbose,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1203,6 +1273,7 @@ class LLMFastMiCRONegotiator(LLMMetaNegotiator):
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
         max_tokens: Maximum tokens in the LLM response (default: 512).
+        verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1217,6 +1288,7 @@ class LLMFastMiCRONegotiator(LLMMetaNegotiator):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1232,6 +1304,7 @@ class LLMFastMiCRONegotiator(LLMMetaNegotiator):
             api_base=api_base,
             temperature=temperature,
             max_tokens=max_tokens,
+            verbose=verbose,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1249,6 +1322,7 @@ class LLMUtilBasedNegotiator(LLMMetaNegotiator):
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
         max_tokens: Maximum tokens in the LLM response (default: 512).
+        verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1263,6 +1337,7 @@ class LLMUtilBasedNegotiator(LLMMetaNegotiator):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1278,6 +1353,7 @@ class LLMUtilBasedNegotiator(LLMMetaNegotiator):
             api_base=api_base,
             temperature=temperature,
             max_tokens=max_tokens,
+            verbose=verbose,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1295,6 +1371,7 @@ class LLMWARNegotiator(LLMMetaNegotiator):
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
         max_tokens: Maximum tokens in the LLM response (default: 512).
+        verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1309,6 +1386,7 @@ class LLMWARNegotiator(LLMMetaNegotiator):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1324,6 +1402,7 @@ class LLMWARNegotiator(LLMMetaNegotiator):
             api_base=api_base,
             temperature=temperature,
             max_tokens=max_tokens,
+            verbose=verbose,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1341,6 +1420,7 @@ class LLMWANNegotiator(LLMMetaNegotiator):
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
         max_tokens: Maximum tokens in the LLM response (default: 512).
+        verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1355,6 +1435,7 @@ class LLMWANNegotiator(LLMMetaNegotiator):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1370,6 +1451,7 @@ class LLMWANNegotiator(LLMMetaNegotiator):
             api_base=api_base,
             temperature=temperature,
             max_tokens=max_tokens,
+            verbose=verbose,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1387,6 +1469,7 @@ class LLMWABNegotiator(LLMMetaNegotiator):
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
         max_tokens: Maximum tokens in the LLM response (default: 512).
+        verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1401,6 +1484,7 @@ class LLMWABNegotiator(LLMMetaNegotiator):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1416,6 +1500,7 @@ class LLMWABNegotiator(LLMMetaNegotiator):
             api_base=api_base,
             temperature=temperature,
             max_tokens=max_tokens,
+            verbose=verbose,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1433,6 +1518,7 @@ class LLMLimitedOutcomesNegotiator(LLMMetaNegotiator):
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
         max_tokens: Maximum tokens in the LLM response (default: 512).
+        verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1447,6 +1533,7 @@ class LLMLimitedOutcomesNegotiator(LLMMetaNegotiator):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1462,6 +1549,7 @@ class LLMLimitedOutcomesNegotiator(LLMMetaNegotiator):
             api_base=api_base,
             temperature=temperature,
             max_tokens=max_tokens,
+            verbose=verbose,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1479,6 +1567,7 @@ class LLMLimitedOutcomesAcceptor(LLMMetaNegotiator):
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
         max_tokens: Maximum tokens in the LLM response (default: 512).
+        verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1493,6 +1582,7 @@ class LLMLimitedOutcomesAcceptor(LLMMetaNegotiator):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1508,6 +1598,7 @@ class LLMLimitedOutcomesAcceptor(LLMMetaNegotiator):
             api_base=api_base,
             temperature=temperature,
             max_tokens=max_tokens,
+            verbose=verbose,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1526,6 +1617,7 @@ class LLMHybridNegotiator(LLMMetaNegotiator):
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
         max_tokens: Maximum tokens in the LLM response (default: 512).
+        verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1541,6 +1633,7 @@ class LLMHybridNegotiator(LLMMetaNegotiator):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1556,6 +1649,7 @@ class LLMHybridNegotiator(LLMMetaNegotiator):
             api_base=api_base,
             temperature=temperature,
             max_tokens=max_tokens,
+            verbose=verbose,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )

@@ -327,6 +327,9 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             Set to False to disable and rely on prompt-based JSON extraction.
         include_reasoning: If True, include the LLM's reasoning in the response
             data sent to the partner. Default is False (reasoning is not shared).
+        verbose: If True, print LLM prompts and responses to stdout. Useful for
+            debugging and understanding the LLM's decision-making process.
+            Default is False.
         system_prompt: Custom system prompt for the LLM conversation. Supports
             tags like {{outcome-space}}, {{utility-function}}, etc.
         preferences_prompt: Custom prompt sent when preferences are first set.
@@ -360,6 +363,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         max_tokens: int = 1024,
         use_structured_output: bool = True,
         include_reasoning: bool = False,
+        verbose: bool = False,
         system_prompt: str | None = None,
         preferences_prompt: str | None = None,
         preferences_changed_prompt: str | None = None,
@@ -395,6 +399,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         self.max_tokens = max_tokens
         self.use_structured_output = use_structured_output
         self.include_reasoning = include_reasoning
+        self.verbose = verbose
         self.llm_kwargs = llm_kwargs or {}
 
         # Configurable prompts (use defaults if not provided)
@@ -570,10 +575,30 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             extra_headers.update(_GITHUB_COPILOT_HEADERS)
             kwargs["extra_headers"] = extra_headers
 
+        # Print prompt if verbose mode is enabled
+        if self.verbose:
+            print("\n" + "=" * 80)
+            print(f"LLM PROMPT ({self.provider}/{self.model})")
+            print("=" * 80)
+            for msg in messages:
+                print(f"\n[{msg['role'].upper()}]")
+                print(msg["content"])
+            print("=" * 80 + "\n")
+
         response = litellm.completion(**kwargs)
         model_response = cast(ModelResponse, response)
         choices = cast(list["Choices"], model_response.choices)
-        return choices[0].message.content or ""
+        response_text = choices[0].message.content or ""
+
+        # Print response if verbose mode is enabled
+        if self.verbose:
+            print("\n" + "=" * 80)
+            print(f"LLM RESPONSE ({self.provider}/{self.model})")
+            print("=" * 80)
+            print(response_text)
+            print("=" * 80 + "\n")
+
+        return response_text
 
     def _send_to_llm(
         self,

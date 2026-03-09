@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `verbose` parameter to `LLMNegotiator` and `LLMMetaNegotiator` (default `False`) to print
+  LLM prompts and responses to stdout for debugging and transparency
+
 ## [0.4.1] - 2026-03-09
 
 ### Changed
