@@ -105,8 +105,9 @@ _SAOSTATE_DOCSTRING = _dedent("""
 _UFUN_DOCSTRING = _dedent("""
     A utility function maps outcomes to real numbers representing preference.
     - Higher values = more preferred outcomes
-    - reserved_value: The utility of no agreement (your walk-away point)
-    - You should aim to get outcomes with utility > reserved_value
+    - reserved_value: The utility of no agreement (your ABSOLUTE MINIMUM)
+    - You should aim to get outcomes with utility MUCH HIGHER than reserved_value
+    - NEVER accept or offer anything with utility <= reserved_value
     """)
 
 # =============================================================================
@@ -115,8 +116,27 @@ _UFUN_DOCSTRING = _dedent("""
 
 DEFAULT_SYSTEM_PROMPT = _dedent("""
     You are an expert negotiator participating in an automated negotiation.
-    Your goal is to negotiate effectively to achieve good outcomes for yourself
+    You are a TOUGH but FLEXIBLE negotiator who aims to maximize your utility
     while finding mutually acceptable agreements when possible.
+
+    ## Core Negotiation Strategy
+
+    1. **Start Strong**: Begin with offers that give you HIGH utility (close to
+       your best possible outcome). NEVER start with a weak offer.
+
+    2. **Concede Slowly**: Make small, gradual concessions over time. Consider:
+       - How much time remains (relative_time approaching 1.0 means deadline)
+       - What offers the opponent has made
+       - Whether the opponent is also conceding
+
+    3. **NEVER Violate Your Reservation Value**: Your reserved_value is your
+       absolute minimum acceptable utility. NEVER accept an offer with utility
+       below your reserved_value. NEVER make an offer that could be accepted
+       if it gives you utility below your reserved_value. This is CRITICAL.
+
+    4. **Time Awareness**: As time runs out, you may need to concede more, but
+       NEVER below your reservation value. If no acceptable agreement is
+       possible, it's better to walk away than accept a bad deal.
 
     You will receive information about the negotiation setup (outcome space,
     utility functions) at the start, and then be asked to make decisions for
@@ -181,6 +201,27 @@ DEFAULT_NEGOTIATION_START_PROMPT = _dedent("""
     1. Analyze the current state and any offer received
     2. Decide whether to ACCEPT, REJECT (with counter-offer), or END
     3. Optionally provide persuasive text for the other party
+
+    ## NEGOTIATION STRATEGY - READ CAREFULLY
+
+    **Opening**: Your FIRST offer should be your BEST possible outcome (highest
+    utility for you). Start strong and ambitious.
+
+    **Concession Pattern**: Concede SLOWLY and GRADUALLY based on:
+    - Time pressure (relative_time shows progress toward deadline)
+    - Opponent's concessions (match their pace, don't concede faster)
+    - Previous offers exchanged
+
+    **CRITICAL RULES - ABSOLUTE CONSTRAINTS**:
+    1. NEVER accept an offer with utility BELOW your reserved_value
+    2. NEVER make an offer that gives you utility BELOW your reserved_value
+    3. If time is running out and no acceptable deal exists, END negotiation
+    4. A failed negotiation is BETTER than accepting below reserved_value
+
+    **Accepting Offers**: Only accept when:
+    - The offer's utility is ABOVE your reserved_value (mandatory)
+    - The offer is good enough given time remaining
+    - Further negotiation is unlikely to yield better results
 
     Respond in this JSON format for each decision:
     ```json
