@@ -31,28 +31,13 @@ from typing import Any
 import pytest
 
 from negmas_llm import LLMNegotiator
+from negmas_llm.common import DEFAULT_MODELS
 
 # =============================================================================
 # Provider Configuration
 # =============================================================================
 
 # Default models for each provider
-DEFAULT_MODELS: dict[str, str] = {
-    "ollama": "qwen3:0.6b",
-    "openai": "gpt-4o-mini",
-    "anthropic": "claude-sonnet-4-20250514",
-    "gemini": "gemini-2.0-flash",
-    "github_copilot": "gpt-4o",  # GitHub Copilot (OAuth device flow)
-    "github": "gpt-4o",  # GitHub Models marketplace
-    "groq": "llama-3.3-70b-versatile",
-    "mistral": "mistral-large-latest",
-    "deepseek": "deepseek-chat",
-    "openrouter": "openai/gpt-4o-mini",
-    "together_ai": "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
-    "cohere": "command-r-plus",
-    "huggingface": "meta-llama/Llama-3.2-3B-Instruct",
-}
-
 # API key environment variable names for each provider
 # Note: github_copilot uses OAuth device flow, no API key needed
 API_KEY_ENV_VARS: dict[str, str] = {

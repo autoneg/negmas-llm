@@ -26,9 +26,10 @@ from negmas_llm import (
     OpenAIAcceptancePolicy,
     OpenAIOfferingPolicy,
 )
+from negmas_llm.common import DEFAULT_MODELS
 
-# Use environment variable for model, defaulting to qwen3:0.6b (small/fast)
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:0.6b")
+# Use environment variable for model, defaulting to centralized default
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", DEFAULT_MODELS["ollama"])
 
 
 @pytest.fixture

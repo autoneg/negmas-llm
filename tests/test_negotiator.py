@@ -10,9 +10,10 @@ from negmas.preferences import LinearAdditiveUtilityFunction as LUFun
 from negmas.sao import AspirationNegotiator, SAOMechanism
 
 from negmas_llm import OllamaNegotiator
+from negmas_llm.common import DEFAULT_MODELS
 
-# Use environment variable for model, defaulting to qwen3:0.6b (small/fast)
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:0.6b")
+# Use environment variable for model, defaulting to centralized default
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", DEFAULT_MODELS["ollama"])
 
 
 @pytest.fixture

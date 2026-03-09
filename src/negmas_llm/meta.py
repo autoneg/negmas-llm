@@ -14,7 +14,10 @@ from negmas.outcomes import ExtendedOutcome, Outcome
 from negmas.sao import ResponseType, SAONegotiator, SAOState
 from negmas.sao.negotiators.meta import SAOMetaNegotiator
 
+from negmas_llm.common import DEFAULT_MODELS
 from negmas_llm.tags import process_prompt
+
+DEFAULT_OLLAMA_MODEL = DEFAULT_MODELS.get("ollama", "qwen3:4b-instruct")
 
 if TYPE_CHECKING:
     from litellm.types.utils import Choices
@@ -494,7 +497,7 @@ class LLMAspirationNegotiator(LLMMetaNegotiator):
 
     Args:
         provider: The LLM provider (default: "ollama").
-        model: The model name (default: "llama3.1:8b").
+        model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
@@ -507,7 +510,7 @@ class LLMAspirationNegotiator(LLMMetaNegotiator):
     def __init__(
         self,
         provider: str = "ollama",
-        model: str = "llama3.1:8b",
+        model: str = DEFAULT_OLLAMA_MODEL,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -542,7 +545,7 @@ class LLMBoulwareTBNegotiator(LLMMetaNegotiator):
 
     Args:
         provider: The LLM provider (default: "ollama").
-        model: The model name (default: "llama3.1:8b").
+        model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
@@ -555,7 +558,7 @@ class LLMBoulwareTBNegotiator(LLMMetaNegotiator):
     def __init__(
         self,
         provider: str = "ollama",
-        model: str = "llama3.1:8b",
+        model: str = DEFAULT_OLLAMA_MODEL,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -590,7 +593,7 @@ class LLMConcederTBNegotiator(LLMMetaNegotiator):
 
     Args:
         provider: The LLM provider (default: "ollama").
-        model: The model name (default: "llama3.1:8b").
+        model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
@@ -603,7 +606,7 @@ class LLMConcederTBNegotiator(LLMMetaNegotiator):
     def __init__(
         self,
         provider: str = "ollama",
-        model: str = "llama3.1:8b",
+        model: str = DEFAULT_OLLAMA_MODEL,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -637,7 +640,7 @@ class LLMLinearTBNegotiator(LLMMetaNegotiator):
 
     Args:
         provider: The LLM provider (default: "ollama").
-        model: The model name (default: "llama3.1:8b").
+        model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
@@ -650,7 +653,7 @@ class LLMLinearTBNegotiator(LLMMetaNegotiator):
     def __init__(
         self,
         provider: str = "ollama",
-        model: str = "llama3.1:8b",
+        model: str = DEFAULT_OLLAMA_MODEL,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -684,7 +687,7 @@ class LLMTimeBasedConcedingNegotiator(LLMMetaNegotiator):
 
     Args:
         provider: The LLM provider (default: "ollama").
-        model: The model name (default: "llama3.1:8b").
+        model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
@@ -697,7 +700,7 @@ class LLMTimeBasedConcedingNegotiator(LLMMetaNegotiator):
     def __init__(
         self,
         provider: str = "ollama",
-        model: str = "llama3.1:8b",
+        model: str = DEFAULT_OLLAMA_MODEL,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -731,7 +734,7 @@ class LLMTimeBasedNegotiator(LLMMetaNegotiator):
 
     Args:
         provider: The LLM provider (default: "ollama").
-        model: The model name (default: "llama3.1:8b").
+        model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
@@ -744,7 +747,7 @@ class LLMTimeBasedNegotiator(LLMMetaNegotiator):
     def __init__(
         self,
         provider: str = "ollama",
-        model: str = "llama3.1:8b",
+        model: str = DEFAULT_OLLAMA_MODEL,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -778,7 +781,7 @@ class LLMNiceNegotiator(LLMMetaNegotiator):
 
     Args:
         provider: The LLM provider (default: "ollama").
-        model: The model name (default: "llama3.1:8b").
+        model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
@@ -791,7 +794,7 @@ class LLMNiceNegotiator(LLMMetaNegotiator):
     def __init__(
         self,
         provider: str = "ollama",
-        model: str = "llama3.1:8b",
+        model: str = DEFAULT_OLLAMA_MODEL,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -824,7 +827,7 @@ class LLMToughNegotiator(LLMMetaNegotiator):
 
     Args:
         provider: The LLM provider (default: "ollama").
-        model: The model name (default: "llama3.1:8b").
+        model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
@@ -837,7 +840,7 @@ class LLMToughNegotiator(LLMMetaNegotiator):
     def __init__(
         self,
         provider: str = "ollama",
-        model: str = "llama3.1:8b",
+        model: str = DEFAULT_OLLAMA_MODEL,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -871,7 +874,7 @@ class LLMNaiveTitForTatNegotiator(LLMMetaNegotiator):
 
     Args:
         provider: The LLM provider (default: "ollama").
-        model: The model name (default: "llama3.1:8b").
+        model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
@@ -884,7 +887,7 @@ class LLMNaiveTitForTatNegotiator(LLMMetaNegotiator):
     def __init__(
         self,
         provider: str = "ollama",
-        model: str = "llama3.1:8b",
+        model: str = DEFAULT_OLLAMA_MODEL,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -918,7 +921,7 @@ class LLMRandomNegotiator(LLMMetaNegotiator):
 
     Args:
         provider: The LLM provider (default: "ollama").
-        model: The model name (default: "llama3.1:8b").
+        model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
@@ -931,7 +934,7 @@ class LLMRandomNegotiator(LLMMetaNegotiator):
     def __init__(
         self,
         provider: str = "ollama",
-        model: str = "llama3.1:8b",
+        model: str = DEFAULT_OLLAMA_MODEL,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -965,7 +968,7 @@ class LLMRandomAlwaysAcceptingNegotiator(LLMMetaNegotiator):
 
     Args:
         provider: The LLM provider (default: "ollama").
-        model: The model name (default: "llama3.1:8b").
+        model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
@@ -978,7 +981,7 @@ class LLMRandomAlwaysAcceptingNegotiator(LLMMetaNegotiator):
     def __init__(
         self,
         provider: str = "ollama",
-        model: str = "llama3.1:8b",
+        model: str = DEFAULT_OLLAMA_MODEL,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1011,7 +1014,7 @@ class LLMCABNegotiator(LLMMetaNegotiator):
 
     Args:
         provider: The LLM provider (default: "ollama").
-        model: The model name (default: "llama3.1:8b").
+        model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
@@ -1024,7 +1027,7 @@ class LLMCABNegotiator(LLMMetaNegotiator):
     def __init__(
         self,
         provider: str = "ollama",
-        model: str = "llama3.1:8b",
+        model: str = DEFAULT_OLLAMA_MODEL,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1057,7 +1060,7 @@ class LLMCANNegotiator(LLMMetaNegotiator):
 
     Args:
         provider: The LLM provider (default: "ollama").
-        model: The model name (default: "llama3.1:8b").
+        model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
@@ -1070,7 +1073,7 @@ class LLMCANNegotiator(LLMMetaNegotiator):
     def __init__(
         self,
         provider: str = "ollama",
-        model: str = "llama3.1:8b",
+        model: str = DEFAULT_OLLAMA_MODEL,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1103,7 +1106,7 @@ class LLMCARNegotiator(LLMMetaNegotiator):
 
     Args:
         provider: The LLM provider (default: "ollama").
-        model: The model name (default: "llama3.1:8b").
+        model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
@@ -1116,7 +1119,7 @@ class LLMCARNegotiator(LLMMetaNegotiator):
     def __init__(
         self,
         provider: str = "ollama",
-        model: str = "llama3.1:8b",
+        model: str = DEFAULT_OLLAMA_MODEL,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1149,7 +1152,7 @@ class LLMMiCRONegotiator(LLMMetaNegotiator):
 
     Args:
         provider: The LLM provider (default: "ollama").
-        model: The model name (default: "llama3.1:8b").
+        model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
@@ -1162,7 +1165,7 @@ class LLMMiCRONegotiator(LLMMetaNegotiator):
     def __init__(
         self,
         provider: str = "ollama",
-        model: str = "llama3.1:8b",
+        model: str = DEFAULT_OLLAMA_MODEL,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1195,7 +1198,7 @@ class LLMFastMiCRONegotiator(LLMMetaNegotiator):
 
     Args:
         provider: The LLM provider (default: "ollama").
-        model: The model name (default: "llama3.1:8b").
+        model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
@@ -1208,7 +1211,7 @@ class LLMFastMiCRONegotiator(LLMMetaNegotiator):
     def __init__(
         self,
         provider: str = "ollama",
-        model: str = "llama3.1:8b",
+        model: str = DEFAULT_OLLAMA_MODEL,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1241,7 +1244,7 @@ class LLMUtilBasedNegotiator(LLMMetaNegotiator):
 
     Args:
         provider: The LLM provider (default: "ollama").
-        model: The model name (default: "llama3.1:8b").
+        model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
@@ -1254,7 +1257,7 @@ class LLMUtilBasedNegotiator(LLMMetaNegotiator):
     def __init__(
         self,
         provider: str = "ollama",
-        model: str = "llama3.1:8b",
+        model: str = DEFAULT_OLLAMA_MODEL,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1287,7 +1290,7 @@ class LLMWARNegotiator(LLMMetaNegotiator):
 
     Args:
         provider: The LLM provider (default: "ollama").
-        model: The model name (default: "llama3.1:8b").
+        model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
@@ -1300,7 +1303,7 @@ class LLMWARNegotiator(LLMMetaNegotiator):
     def __init__(
         self,
         provider: str = "ollama",
-        model: str = "llama3.1:8b",
+        model: str = DEFAULT_OLLAMA_MODEL,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1333,7 +1336,7 @@ class LLMWANNegotiator(LLMMetaNegotiator):
 
     Args:
         provider: The LLM provider (default: "ollama").
-        model: The model name (default: "llama3.1:8b").
+        model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
@@ -1346,7 +1349,7 @@ class LLMWANNegotiator(LLMMetaNegotiator):
     def __init__(
         self,
         provider: str = "ollama",
-        model: str = "llama3.1:8b",
+        model: str = DEFAULT_OLLAMA_MODEL,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1379,7 +1382,7 @@ class LLMWABNegotiator(LLMMetaNegotiator):
 
     Args:
         provider: The LLM provider (default: "ollama").
-        model: The model name (default: "llama3.1:8b").
+        model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
@@ -1392,7 +1395,7 @@ class LLMWABNegotiator(LLMMetaNegotiator):
     def __init__(
         self,
         provider: str = "ollama",
-        model: str = "llama3.1:8b",
+        model: str = DEFAULT_OLLAMA_MODEL,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1425,7 +1428,7 @@ class LLMLimitedOutcomesNegotiator(LLMMetaNegotiator):
 
     Args:
         provider: The LLM provider (default: "ollama").
-        model: The model name (default: "llama3.1:8b").
+        model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
@@ -1438,7 +1441,7 @@ class LLMLimitedOutcomesNegotiator(LLMMetaNegotiator):
     def __init__(
         self,
         provider: str = "ollama",
-        model: str = "llama3.1:8b",
+        model: str = DEFAULT_OLLAMA_MODEL,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1471,7 +1474,7 @@ class LLMLimitedOutcomesAcceptor(LLMMetaNegotiator):
 
     Args:
         provider: The LLM provider (default: "ollama").
-        model: The model name (default: "llama3.1:8b").
+        model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
@@ -1484,7 +1487,7 @@ class LLMLimitedOutcomesAcceptor(LLMMetaNegotiator):
     def __init__(
         self,
         provider: str = "ollama",
-        model: str = "llama3.1:8b",
+        model: str = DEFAULT_OLLAMA_MODEL,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1518,7 +1521,7 @@ class LLMHybridNegotiator(LLMMetaNegotiator):
 
     Args:
         provider: The LLM provider (default: "ollama").
-        model: The model name (default: "llama3.1:8b").
+        model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
         temperature: Sampling temperature for the LLM (default: 0.7).
@@ -1532,7 +1535,7 @@ class LLMHybridNegotiator(LLMMetaNegotiator):
     def __init__(
         self,
         provider: str = "ollama",
-        model: str = "llama3.1:8b",
+        model: str = DEFAULT_OLLAMA_MODEL,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
