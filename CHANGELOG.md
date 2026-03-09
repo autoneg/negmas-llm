@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-03-09
+
+### Changed
+- Centralized default model configuration in `src/negmas_llm/common.py`
+- Updated default Ollama model from `qwen3:0.6b` to `qwen3:4b-instruct`
+- All LLM-wrapped negotiators now use `DEFAULT_OLLAMA_MODEL` from centralized config
+
 ## [0.4.0] - 2026-02-14
 
 ### Added
