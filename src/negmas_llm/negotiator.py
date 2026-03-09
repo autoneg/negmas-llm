@@ -185,7 +185,7 @@ DEFAULT_NEGOTIATION_START_PROMPT = _dedent("""
     Respond in this JSON format for each decision:
     ```json
     {
-        "response_type": "accept" | "reject" | "end" | "wait",
+        "response_type": "accept" | "reject" | "end",
         "outcome": [value1, value2, ...] | null,
         "text": "optional persuasive message to send to your opponent",
         "reasoning": "brief explanation of your decision (not sent to opponent)"
@@ -193,16 +193,19 @@ DEFAULT_NEGOTIATION_START_PROMPT = _dedent("""
     ```
 
     Where:
-    - "accept": Accept the current offer on the table
-    - "reject": Reject and provide a counter-offer in "outcome"
+    - "accept": Accept the current offer on the table (only when there IS an offer)
+    - "reject": Reject current offer and provide a counter-offer in "outcome"
     - "end": End the negotiation without agreement
-    - "wait": Wait without making an offer (only if allowed by mechanism)
     - "outcome": Your counter-offer as a list matching issue order, or null
     - "text": A message to send to your opponent (actually delivered to them)
     - "reasoning": Your internal reasoning (optional, not sent to opponent)
 
-    You may occasionally send ONLY text (null outcome) to persuade the
-    opponent, but this should be rare and strategic. Include an outcome usually.
+    IMPORTANT:
+    - When there is NO offer on the table, you MUST make a proposal
+      (use "reject" with your desired outcome)
+    - You CANNOT "wait" - you must always take an action (accept/reject/end)
+    - If accepting, the offer must already be on the table
+    - If rejecting or when no offer exists, you must provide an outcome
 
     Ready to begin!
     """)
@@ -232,7 +235,7 @@ _NEGOTIATION_RESPONSE_SCHEMA: dict[str, Any] = {
             "properties": {
                 "response_type": {
                     "type": "string",
-                    "enum": ["accept", "reject", "end", "wait"],
+                    "enum": ["accept", "reject", "end"],
                     "description": "The negotiation action to take",
                 },
                 "outcome": {
@@ -311,7 +314,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
     3. __call__: For each round, sends state and asks for decision + counter-offer
 
     The LLM returns structured responses with:
-    - response_type: accept/reject/end/wait
+    - response_type: accept/reject/end
     - outcome: Counter-offer if rejecting
     - text: Optional persuasion text for the opponent
 
@@ -803,8 +806,6 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             "accept": ResponseType.ACCEPT_OFFER,
             "reject": ResponseType.REJECT_OFFER,
             "end": ResponseType.END_NEGOTIATION,
-            "wait": ResponseType.WAIT,
-            "no_response": ResponseType.NO_RESPONSE,
         }
         response_type = response_type_map.get(
             response_type_str, ResponseType.REJECT_OFFER

@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `verbose` parameter to `LLMNegotiator` and `LLMMetaNegotiator` (default `False`) to print
   LLM prompts and responses to stdout for debugging and transparency
 
+### Fixed
+- **CRITICAL BUG**: Removed "wait" as a valid response type to prevent infinite wait loops
+  - LLM negotiators now must respond with only: accept, reject, or end
+  - Updated JSON schema to exclude "wait" from valid response types
+  - Updated prompts to explicitly forbid waiting and clarify required actions
+  - When no offer is on the table, negotiators must make a proposal (reject with outcome)
+
 ## [0.4.1] - 2026-03-09
 
 ### Changed
