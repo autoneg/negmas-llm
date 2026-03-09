@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import textwrap
+import time
 from abc import ABC
 from typing import TYPE_CHECKING, Any, cast
 
@@ -18,6 +19,10 @@ from negmas.outcomes import Outcome
 from negmas.preferences import BaseUtilityFunction
 from negmas.sao import ResponseType, SAOResponse, SAOState
 from negmas.sao.negotiators.base import SAOCallNegotiator
+from rich.console import Console
+from rich.panel import Panel
+from rich.syntax import Syntax
+from rich.table import Table
 
 from negmas_llm.common import DEFAULT_MODELS
 from negmas_llm.tags import process_prompt as _process_prompt
@@ -619,28 +624,60 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             extra_headers.update(_GITHUB_COPILOT_HEADERS)
             kwargs["extra_headers"] = extra_headers
 
-        # Print prompt if verbose mode is enabled
-        if self.verbose:
-            print("\n" + "=" * 80)
-            print(f"LLM PROMPT ({self.provider}/{self.model})")
-            print("=" * 80)
-            for msg in messages:
-                print(f"\n[{msg['role'].upper()}]")
-                print(msg["content"])
-            print("=" * 80 + "\n")
+        # Print prompt if verbose mode is enabled (using rich)
+        console = Console() if self.verbose else None
+        if self.verbose and console:
+            console.print()
+            # Create a table for the prompt header
+            header = Table.grid(padding=(0, 1))
+            header.add_column(style="bold cyan")
+            header.add_row(f"LLM PROMPT ({self.provider}/{self.model})")
+            console.print(Panel(header, style="cyan"))
 
+            for msg in messages:
+                role_style = "bold green" if msg["role"] == "assistant" else "bold blue"
+                console.print(f"[{role_style}][{msg['role'].upper()}][/{role_style}]")
+                console.print(msg["content"])
+                console.print()
+
+        # Time the LLM call
+        start_time = time.perf_counter()
         response = litellm.completion(**kwargs)
+        elapsed_time = time.perf_counter() - start_time
+
         model_response = cast(ModelResponse, response)
         choices = cast(list["Choices"], model_response.choices)
         response_text = choices[0].message.content or ""
 
-        # Print response if verbose mode is enabled
-        if self.verbose:
-            print("\n" + "=" * 80)
-            print(f"LLM RESPONSE ({self.provider}/{self.model})")
-            print("=" * 80)
-            print(response_text)
-            print("=" * 80 + "\n")
+        # Print response if verbose mode is enabled (using rich)
+        if self.verbose and console:
+            console.print()
+            # Create a panel for the response with timing info
+            header = Table.grid(padding=(0, 1))
+            header.add_column(style="bold green")
+            header.add_column(justify="right", style="bold yellow")
+            header.add_row(
+                f"LLM RESPONSE ({self.provider}/{self.model})",
+                f"[{elapsed_time:.2f}s]",
+            )
+            console.print(Panel(header, style="green"))
+
+            # Try to format as JSON if it looks like JSON
+            stripped = response_text.strip()
+            if stripped.startswith("{") or stripped.startswith("["):
+                try:
+                    # Parse and re-format for pretty printing
+                    parsed = json.loads(stripped)
+                    formatted = json.dumps(parsed, indent=2)
+                    syntax = Syntax(
+                        formatted, "json", theme="monokai", line_numbers=False
+                    )
+                    console.print(syntax)
+                except json.JSONDecodeError:
+                    console.print(response_text)
+            else:
+                console.print(response_text)
+            console.print()
 
         return response_text
 

@@ -1768,6 +1768,7 @@ source = { editable = "." }
 dependencies = [
     { name = "litellm" },
     { name = "negmas" },
+    { name = "rich" },
 ]
 
 [package.optional-dependencies]
@@ -1792,6 +1793,7 @@ requires-dist = [
     { name = "litellm", specifier = ">=1.80.11" },
     { name = "negmas", specifier = ">=0.15.1" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.5.1" },
+    { name = "rich", specifier = ">=13.0.0" },
 ]
 provides-extras = ["dev"]
 
