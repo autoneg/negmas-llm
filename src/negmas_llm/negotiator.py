@@ -108,11 +108,24 @@ _SAOSTATE_DOCSTRING = _dedent("""
     """)
 
 _UFUN_DOCSTRING = _dedent("""
-    A utility function maps outcomes to real numbers representing preference.
-    - Higher values = more preferred outcomes
-    - reserved_value: The utility of no agreement (your ABSOLUTE MINIMUM)
-    - You should aim to get outcomes with utility MUCH HIGHER than reserved_value
-    - NEVER accept or offer anything with utility <= reserved_value
+    Your utility function is a **Linear Additive Utility Function**. This means:
+
+    1. **How it works**: Your total utility for an outcome is calculated as:
+       `utility = sum(weight[i] * value_utility[i] for each issue i)`
+
+    2. **Weights**: Each issue has a weight indicating its relative importance.
+       Higher weight = more important issue for you.
+
+    3. **Value Utilities**: For each issue, different values give different utilities.
+       The utility function below shows the utility you get from each value.
+
+    4. **reserved_value**: This is your ABSOLUTE MINIMUM acceptable utility.
+       - NEVER accept an offer with utility <= reserved_value
+       - NEVER make an offer that gives you utility <= reserved_value
+       - If no agreement above reserved_value is possible, walk away
+
+    5. **Strategy**: To maximize utility, prioritize issues with higher weights
+       and push for values that give you higher value utilities.
     """)
 
 # =============================================================================
@@ -142,6 +155,9 @@ DEFAULT_SYSTEM_PROMPT = _dedent("""
     4. **Time Awareness**: As time runs out, you may need to concede more, but
        NEVER below your reservation value. If no acceptable agreement is
        possible, it's better to walk away than accept a bad deal.
+
+    5. **Information Hiding**: Do not reveal your reserved_value or utility
+       function details to the opponent.
 
     You will receive information about the negotiation setup (outcome space,
     utility functions) at the start, and then be asked to make decisions for
@@ -204,7 +220,7 @@ DEFAULT_NEGOTIATION_START_PROMPT = _dedent("""
 
     The negotiation has now started. For each round, you will be asked to:
     1. Analyze the current state and any offer received
-    2. Decide whether to ACCEPT, REJECT (with counter-offer), or END
+    2. Decide whether to ACCEPT, or REJECT (with counter-offer)
     3. Optionally provide persuasive text for the other party
 
     ## NEGOTIATION STRATEGY - READ CAREFULLY

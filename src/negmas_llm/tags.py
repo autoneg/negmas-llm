@@ -959,6 +959,74 @@ def _handle_outcome_space(ctx: TagContext) -> str:
             return str(outcome_space)
 
 
+def _format_linear_additive_ufun(ufun: Any, negotiator: Any) -> str:
+    """Format a LinearAdditiveUtilityFunction as human-readable text.
+
+    Args:
+        ufun: The utility function (expected to be LinearAdditiveUtilityFunction)
+        negotiator: The negotiator (to get outcome space info)
+
+    Returns:
+        Human-readable description of the utility function
+    """
+    lines = []
+
+    # Get outcome space for issue names
+    outcome_space = None
+    if negotiator.nmi:
+        outcome_space = negotiator.nmi.outcome_space
+
+    # Get weights and values
+    weights = getattr(ufun, "weights", None)
+    values = getattr(ufun, "values", None)
+    reserved = getattr(ufun, "reserved_value", None)
+
+    if weights is None or values is None:
+        # Fallback for non-linear-additive functions
+        return str(ufun)
+
+    lines.append("**Issue Weights and Value Utilities:**")
+    lines.append("")
+
+    # Get issue names from outcome space if available
+    issue_names = []
+    issue_values_list = []
+    if outcome_space and hasattr(outcome_space, "issues"):
+        for issue in outcome_space.issues:
+            issue_names.append(issue.name)
+            issue_values_list.append(list(issue.all))
+    else:
+        # Fallback to generic names
+        for i in range(len(weights)):
+            issue_names.append(f"Issue {i}")
+            issue_values_list.append([])
+
+    # Format each issue
+    for i, (name, weight, vfun) in enumerate(
+        zip(issue_names, weights, values, strict=False)
+    ):
+        lines.append(f"**{name}** (weight: {weight:.3f})")
+
+        # Try to get value utilities
+        if i < len(issue_values_list) and issue_values_list[i]:
+            value_utils = []
+            for val in issue_values_list[i]:
+                try:
+                    u = vfun(val)
+                    value_utils.append(f"  - {val}: utility = {u:.3f}")
+                except Exception:
+                    value_utils.append(f"  - {val}: utility = ?")
+            lines.extend(value_utils)
+        lines.append("")
+
+    # Add reserved value prominently
+    if reserved is not None:
+        lines.append(f"**RESERVED VALUE (minimum acceptable): {reserved:.3f}**")
+        lines.append("(NEVER accept or offer anything with utility <= this value)")
+
+    return "\n".join(lines)
+
+
 def _handle_utility_function(ctx: TagContext) -> str:
     """Handle the utility-function tag."""
     if ctx.negotiator.ufun is None:
@@ -974,9 +1042,14 @@ def _handle_utility_function(ctx: TagContext) -> str:
         except Exception:
             return json.dumps({"description": str(ufun)})
     else:
-        # Text format
-        reserved = ctx.negotiator.reserved_value
-        return f"Utility function: {ufun}\nReserved value: {reserved}"
+        # Text format - use human-readable formatting for linear additive functions
+        # Check if it's a LinearAdditiveUtilityFunction
+        if hasattr(ufun, "weights") and hasattr(ufun, "values"):
+            return _format_linear_additive_ufun(ufun, ctx.negotiator)
+        else:
+            # Fallback for other utility function types
+            reserved = ctx.negotiator.reserved_value
+            return f"Utility function: {ufun}\nReserved value: {reserved}"
 
 
 def _handle_opponent_utility_function(ctx: TagContext) -> str:
@@ -996,11 +1069,17 @@ def _handle_opponent_utility_function(ctx: TagContext) -> str:
         except Exception:
             return json.dumps({"description": str(opponent_ufun)})
     else:
-        reserved = getattr(opponent_ufun, "reserved_value", None)
-        text = f"Opponent utility function: {opponent_ufun}"
-        if reserved is not None:
-            text += f"\nOpponent reserved value: {reserved}"
-        return text
+        # Text format - use human-readable formatting for linear additive functions
+        if hasattr(opponent_ufun, "weights") and hasattr(opponent_ufun, "values"):
+            return "**Opponent's Utility Function:**\n" + _format_linear_additive_ufun(
+                opponent_ufun, ctx.negotiator
+            )
+        else:
+            reserved = getattr(opponent_ufun, "reserved_value", None)
+            text = f"Opponent utility function: {opponent_ufun}"
+            if reserved is not None:
+                text += f"\nOpponent reserved value: {reserved}"
+            return text
 
 
 def _get_my_offers(ctx: TagContext) -> list[Outcome]:
