@@ -9,7 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `verbose` parameter to `LLMNegotiator` and `LLMMetaNegotiator` (default `False`) to print
-  LLM prompts and responses to stdout for debugging and transparency
+  LLM prompts and responses to stdout with rich formatting and timing information
+- Non-LLM template-based negotiators for generating human-readable text without LLM calls:
+  - `TemplateBasedAdapterNegotiator` - Base class that wraps any negotiator with template text
+  - `BoulwareWithTextNegotiator` - Tough strategy with template text messages
+  - `ConcederWithTextNegotiator` - Soft strategy with template text messages
+  - `LinearWithTextNegotiator` - Linear concession with template text messages
+- Template constants for customizing negotiation messages: `ACCEPTANCE_MESSAGES`,
+  `CHANGE_PHRASES`, `COMPARISON_WORDS`, `REJECTION_STARTERS`, `REJECTION_ENDERS`,
+  `OPENING_OFFER_STARTERS`, `OPENING_OFFER_ENDERS`
+- Strategic negotiation guidance in LLM prompts (start strong, concede slowly, protect reservation value)
+- Improved utility function display showing weighted contributions for clearer LLM reasoning
 
 ### Fixed
 - **CRITICAL BUG**: Removed "wait" as a valid response type to prevent infinite wait loops
@@ -17,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Updated JSON schema to exclude "wait" from valid response types
   - Updated prompts to explicitly forbid waiting and clarify required actions
   - When no offer is on the table, negotiators must make a proposal (reject with outcome)
+
+### Changed
+- Bumped negmas dependency to >= 0.15.2
 
 ## [0.4.1] - 2026-03-09
 
@@ -129,7 +142,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Python 3.11, 3.12, 3.13, 3.14 support
 - AGPL-3.0 license
 
-[Unreleased]: https://github.com/autoneg/negmas-llm/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/autoneg/negmas-llm/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/autoneg/negmas-llm/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/autoneg/negmas-llm/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/autoneg/negmas-llm/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/autoneg/negmas-llm/compare/v0.2.1...v0.2.2
