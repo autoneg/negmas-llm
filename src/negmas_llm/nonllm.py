@@ -1,14 +1,22 @@
 import random
 
 from negmas.common import Outcome
-from negmas.gb import BoulwareTBNegotiator, GBNegotiator
+from negmas.gb import (
+    BoulwareTBNegotiator,
+    ConcederTBNegotiator,
+    GBNegotiator,
+    LinearTBNegotiator,
+)
 from negmas.gb.common import ExtendedResponseType, ResponseType
 from negmas.outcomes import ExtendedOutcome
-from negmas.sao import SAOState
+from negmas.sao import SAONegotiator, SAOState
 from negmas.sao.negotiators.meta import SAOMetaNegotiator
 
 __all__ = [
     "TemplateBasedAdapterNegotiator",
+    "BoulwareWithTextNegotiator",
+    "ConcederWithTextNegotiator",
+    "LinearWithTextNegotiator",
     "ACCEPTANCE_MESSAGES",
     "CHANGE_PHRASES",
     "COMPARISON_WORDS",
@@ -153,7 +161,9 @@ class TemplateBasedAdapterNegotiator(SAOMetaNegotiator):
     Unlike LLMMetaNegotiator, this uses predefined templates instead of LLM calls.
     """
 
-    def __init__(self, base_negotiator: GBNegotiator | None = None, **kwargs) -> None:
+    def __init__(
+        self, base_negotiator: GBNegotiator | SAONegotiator | None = None, **kwargs
+    ) -> None:
         """Initialize the TemplateBasedAdapterNegotiator.
 
         Args:
@@ -459,3 +469,53 @@ class TemplateBasedAdapterNegotiator(SAOMetaNegotiator):
         # Fallback without specific details
         ender = random.choice(OPENING_OFFER_ENDERS)
         return f"{starter} {ender}"
+
+
+class BoulwareWithTextNegotiator(TemplateBasedAdapterNegotiator):
+    """Boulware (tough) negotiator with template-based text messages.
+
+    This negotiator starts with high demands and concedes slowly,
+    making most concessions near the deadline. Uses predefined templates
+    for generating human-readable text messages.
+    """
+
+    def __init__(self, **kwargs) -> None:
+        """Initialize with a BoulwareTBNegotiator as the base strategy.
+
+        Args:
+            **kwargs: Additional arguments passed to TemplateBasedAdapterNegotiator.
+        """
+        super().__init__(base_negotiator=BoulwareTBNegotiator(), **kwargs)
+
+
+class ConcederWithTextNegotiator(TemplateBasedAdapterNegotiator):
+    """Conceder (soft) negotiator with template-based text messages.
+
+    This negotiator concedes quickly early in the negotiation,
+    making most concessions at the beginning. Uses predefined templates
+    for generating human-readable text messages.
+    """
+
+    def __init__(self, **kwargs) -> None:
+        """Initialize with a ConcederTBNegotiator as the base strategy.
+
+        Args:
+            **kwargs: Additional arguments passed to TemplateBasedAdapterNegotiator.
+        """
+        super().__init__(base_negotiator=ConcederTBNegotiator(), **kwargs)
+
+
+class LinearWithTextNegotiator(TemplateBasedAdapterNegotiator):
+    """Linear negotiator with template-based text messages.
+
+    This negotiator concedes at a constant rate throughout the negotiation.
+    Uses predefined templates for generating human-readable text messages.
+    """
+
+    def __init__(self, **kwargs) -> None:
+        """Initialize with a LinearTBNegotiator as the base strategy.
+
+        Args:
+            **kwargs: Additional arguments passed to TemplateBasedAdapterNegotiator.
+        """
+        super().__init__(base_negotiator=LinearTBNegotiator(), **kwargs)

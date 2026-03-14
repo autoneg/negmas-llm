@@ -1,4 +1,4 @@
-"""Tests for TemplateBasedAdapterNegotiator."""
+"""Tests for TemplateBasedAdapterNegotiator and *WithTextNegotiator classes."""
 
 from __future__ import annotations
 
@@ -17,6 +17,9 @@ from negmas_llm import (
     OPENING_OFFER_STARTERS,
     REJECTION_ENDERS,
     REJECTION_STARTERS,
+    BoulwareWithTextNegotiator,
+    ConcederWithTextNegotiator,
+    LinearWithTextNegotiator,
     TemplateBasedAdapterNegotiator,
 )
 
@@ -370,3 +373,290 @@ class TestTemplateBasedAdapterNegotiatorRegistry:
         assert "sao" in info.tags
         assert "template" in info.tags
         assert "non-llm" in info.tags
+
+
+# =============================================================================
+# Tests for *WithTextNegotiator convenience classes
+# =============================================================================
+
+
+class TestBoulwareWithTextNegotiator:
+    """Tests for BoulwareWithTextNegotiator."""
+
+    def test_initialization(self):
+        """Test that BoulwareWithTextNegotiator initializes correctly."""
+        negotiator = BoulwareWithTextNegotiator()
+        assert negotiator.base_negotiator is not None
+        assert isinstance(negotiator.base_negotiator, BoulwareTBNegotiator)
+
+    def test_initialization_with_name(self):
+        """Test that name is properly set."""
+        negotiator = BoulwareWithTextNegotiator(name="boulware_test")
+        assert negotiator.name == "boulware_test"
+
+    def test_propose_returns_extended_outcome(self, simple_negotiation_setup):
+        """Test that propose returns an ExtendedOutcome with text."""
+        outcome_space, ufun1, _ = simple_negotiation_setup
+
+        negotiator = BoulwareWithTextNegotiator(ufun=ufun1)
+        mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=10)
+        mechanism.add(negotiator)
+
+        state = mechanism.state
+        proposal = negotiator.propose(state)
+
+        assert proposal is not None
+        assert isinstance(proposal, ExtendedOutcome)
+        assert proposal.data is not None
+        assert "text" in proposal.data
+        assert len(proposal.data["text"]) > 0
+
+    def test_negotiation_runs(self, simple_negotiation_setup):
+        """Test that BoulwareWithTextNegotiator can complete a negotiation."""
+        outcome_space, ufun1, ufun2 = simple_negotiation_setup
+
+        negotiator1 = BoulwareWithTextNegotiator(ufun=ufun1, name="boulware1")
+        negotiator2 = ConcederWithTextNegotiator(ufun=ufun2, name="conceder1")
+
+        mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=20)
+        mechanism.add(negotiator1)
+        mechanism.add(negotiator2)
+
+        result = mechanism.run()
+
+        assert result is not None
+        assert result.started
+        assert mechanism.state.ended
+
+
+class TestConcederWithTextNegotiator:
+    """Tests for ConcederWithTextNegotiator."""
+
+    def test_initialization(self):
+        """Test that ConcederWithTextNegotiator initializes correctly."""
+        negotiator = ConcederWithTextNegotiator()
+        assert negotiator.base_negotiator is not None
+        assert isinstance(negotiator.base_negotiator, ConcederTBNegotiator)
+
+    def test_initialization_with_name(self):
+        """Test that name is properly set."""
+        negotiator = ConcederWithTextNegotiator(name="conceder_test")
+        assert negotiator.name == "conceder_test"
+
+    def test_propose_returns_extended_outcome(self, simple_negotiation_setup):
+        """Test that propose returns an ExtendedOutcome with text."""
+        outcome_space, ufun1, _ = simple_negotiation_setup
+
+        negotiator = ConcederWithTextNegotiator(ufun=ufun1)
+        mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=10)
+        mechanism.add(negotiator)
+
+        state = mechanism.state
+        proposal = negotiator.propose(state)
+
+        assert proposal is not None
+        assert isinstance(proposal, ExtendedOutcome)
+        assert proposal.data is not None
+        assert "text" in proposal.data
+        assert len(proposal.data["text"]) > 0
+
+    def test_negotiation_runs(self, simple_negotiation_setup):
+        """Test that ConcederWithTextNegotiator can complete a negotiation."""
+        outcome_space, ufun1, ufun2 = simple_negotiation_setup
+
+        negotiator1 = ConcederWithTextNegotiator(ufun=ufun1, name="conceder1")
+        negotiator2 = ConcederWithTextNegotiator(ufun=ufun2, name="conceder2")
+
+        mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=20)
+        mechanism.add(negotiator1)
+        mechanism.add(negotiator2)
+
+        result = mechanism.run()
+
+        assert result is not None
+        assert result.started
+        assert mechanism.state.ended
+
+
+class TestLinearWithTextNegotiator:
+    """Tests for LinearWithTextNegotiator."""
+
+    def test_initialization(self):
+        """Test that LinearWithTextNegotiator initializes correctly."""
+        negotiator = LinearWithTextNegotiator()
+        assert negotiator.base_negotiator is not None
+        assert isinstance(negotiator.base_negotiator, LinearTBNegotiator)
+
+    def test_initialization_with_name(self):
+        """Test that name is properly set."""
+        negotiator = LinearWithTextNegotiator(name="linear_test")
+        assert negotiator.name == "linear_test"
+
+    def test_propose_returns_extended_outcome(self, simple_negotiation_setup):
+        """Test that propose returns an ExtendedOutcome with text."""
+        outcome_space, ufun1, _ = simple_negotiation_setup
+
+        negotiator = LinearWithTextNegotiator(ufun=ufun1)
+        mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=10)
+        mechanism.add(negotiator)
+
+        state = mechanism.state
+        proposal = negotiator.propose(state)
+
+        assert proposal is not None
+        assert isinstance(proposal, ExtendedOutcome)
+        assert proposal.data is not None
+        assert "text" in proposal.data
+        assert len(proposal.data["text"]) > 0
+
+    def test_negotiation_runs(self, simple_negotiation_setup):
+        """Test that LinearWithTextNegotiator can complete a negotiation."""
+        outcome_space, ufun1, ufun2 = simple_negotiation_setup
+
+        negotiator1 = LinearWithTextNegotiator(ufun=ufun1, name="linear1")
+        negotiator2 = LinearWithTextNegotiator(ufun=ufun2, name="linear2")
+
+        mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=20)
+        mechanism.add(negotiator1)
+        mechanism.add(negotiator2)
+
+        result = mechanism.run()
+
+        assert result is not None
+        assert result.started
+        assert mechanism.state.ended
+
+
+class TestWithTextNegotiatorsExports:
+    """Test that all *WithTextNegotiator classes are exported."""
+
+    def test_boulware_with_text_exported(self):
+        """Test that BoulwareWithTextNegotiator is exported."""
+        from negmas_llm import BoulwareWithTextNegotiator
+
+        assert BoulwareWithTextNegotiator is not None
+
+    def test_conceder_with_text_exported(self):
+        """Test that ConcederWithTextNegotiator is exported."""
+        from negmas_llm import ConcederWithTextNegotiator
+
+        assert ConcederWithTextNegotiator is not None
+
+    def test_linear_with_text_exported(self):
+        """Test that LinearWithTextNegotiator is exported."""
+        from negmas_llm import LinearWithTextNegotiator
+
+        assert LinearWithTextNegotiator is not None
+
+
+class TestWithTextNegotiatorsRegistry:
+    """Test that *WithTextNegotiator classes are registered."""
+
+    def test_boulware_registered(self):
+        """Test that BoulwareWithTextNegotiator is registered."""
+        from negmas.registry import negotiator_registry
+
+        from negmas_llm import BoulwareWithTextNegotiator
+
+        assert negotiator_registry.is_registered(BoulwareWithTextNegotiator)
+        info = negotiator_registry.get_by_class(BoulwareWithTextNegotiator)
+        assert info is not None
+        assert "boulware" in info.tags
+        assert "non-llm" in info.tags
+
+    def test_conceder_registered(self):
+        """Test that ConcederWithTextNegotiator is registered."""
+        from negmas.registry import negotiator_registry
+
+        from negmas_llm import ConcederWithTextNegotiator
+
+        assert negotiator_registry.is_registered(ConcederWithTextNegotiator)
+        info = negotiator_registry.get_by_class(ConcederWithTextNegotiator)
+        assert info is not None
+        assert "conceder" in info.tags
+        assert "non-llm" in info.tags
+
+    def test_linear_registered(self):
+        """Test that LinearWithTextNegotiator is registered."""
+        from negmas.registry import negotiator_registry
+
+        from negmas_llm import LinearWithTextNegotiator
+
+        assert negotiator_registry.is_registered(LinearWithTextNegotiator)
+        info = negotiator_registry.get_by_class(LinearWithTextNegotiator)
+        assert info is not None
+        assert "linear" in info.tags
+        assert "non-llm" in info.tags
+
+
+class TestWithTextNegotiatorsMixedNegotiation:
+    """Test negotiations between different *WithTextNegotiator types."""
+
+    def test_boulware_vs_conceder(self, simple_negotiation_setup):
+        """Test BoulwareWithTextNegotiator vs ConcederWithTextNegotiator."""
+        outcome_space, ufun1, ufun2 = simple_negotiation_setup
+
+        negotiator1 = BoulwareWithTextNegotiator(ufun=ufun1, name="boulware")
+        negotiator2 = ConcederWithTextNegotiator(ufun=ufun2, name="conceder")
+
+        mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=30)
+        mechanism.add(negotiator1)
+        mechanism.add(negotiator2)
+
+        result = mechanism.run()
+
+        assert result is not None
+        assert result.started
+
+        # Check that offers have text
+        trace = mechanism.full_trace
+        offers_with_text = [
+            t for t in trace if t.offer is not None and t.data and "text" in t.data
+        ]
+        assert len(offers_with_text) > 0
+
+    def test_linear_vs_boulware(self, simple_negotiation_setup):
+        """Test LinearWithTextNegotiator vs BoulwareWithTextNegotiator."""
+        outcome_space, ufun1, ufun2 = simple_negotiation_setup
+
+        negotiator1 = LinearWithTextNegotiator(ufun=ufun1, name="linear")
+        negotiator2 = BoulwareWithTextNegotiator(ufun=ufun2, name="boulware")
+
+        mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=30)
+        mechanism.add(negotiator1)
+        mechanism.add(negotiator2)
+
+        result = mechanism.run()
+
+        assert result is not None
+        assert result.started
+
+    def test_all_three_strategies_produce_different_offers(
+        self, discrete_negotiation_setup
+    ):
+        """Test that different strategies produce different concession patterns."""
+        outcome_space, ufun1, _ = discrete_negotiation_setup
+
+        # Run three separate negotiations with same ufun to compare strategies
+        strategies = [
+            ("boulware", BoulwareWithTextNegotiator),
+            ("conceder", ConcederWithTextNegotiator),
+            ("linear", LinearWithTextNegotiator),
+        ]
+
+        all_first_offers = {}
+
+        for name, negotiator_class in strategies:
+            negotiator = negotiator_class(ufun=ufun1, name=name)
+            mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=10)
+            mechanism.add(negotiator)
+
+            state = mechanism.state
+            proposal = negotiator.propose(state)
+
+            assert proposal is not None
+            assert isinstance(proposal, ExtendedOutcome)
+            all_first_offers[name] = proposal.outcome
+
+        # All strategies should produce valid offers
+        assert all(offer is not None for offer in all_first_offers.values())

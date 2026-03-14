@@ -71,6 +71,9 @@ from negmas_llm.nonllm import (
     OPENING_OFFER_STARTERS,
     REJECTION_ENDERS,
     REJECTION_STARTERS,
+    BoulwareWithTextNegotiator,
+    ConcederWithTextNegotiator,
+    LinearWithTextNegotiator,
     TemplateBasedAdapterNegotiator,
 )
 from negmas_llm.tags import (
@@ -362,6 +365,24 @@ negotiator_registry.register(
     tags={"sao", "meta", "template", "non-llm"},
 )
 
+negotiator_registry.register(
+    BoulwareWithTextNegotiator,
+    source=_NEGOTIATOR_SOURCE,
+    tags={"sao", "meta", "template", "non-llm", "boulware"},
+)
+
+negotiator_registry.register(
+    ConcederWithTextNegotiator,
+    source=_NEGOTIATOR_SOURCE,
+    tags={"sao", "meta", "template", "non-llm", "conceder"},
+)
+
+negotiator_registry.register(
+    LinearWithTextNegotiator,
+    source=_NEGOTIATOR_SOURCE,
+    tags={"sao", "meta", "template", "non-llm", "linear"},
+)
+
 # =============================================================================
 # Register components with negmas registry
 # =============================================================================
@@ -513,8 +534,11 @@ __all__ = [
     "get_available_tags",
     "get_tag_documentation",
     "print_tag_help",
-    # Non-LLM negotiators
+    # Non-LLM negotiators (template-based)
     "TemplateBasedAdapterNegotiator",
+    "BoulwareWithTextNegotiator",
+    "ConcederWithTextNegotiator",
+    "LinearWithTextNegotiator",
     # Template constants for TemplateBasedAdapterNegotiator
     "ACCEPTANCE_MESSAGES",
     "CHANGE_PHRASES",
