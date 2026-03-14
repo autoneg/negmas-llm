@@ -1,5 +1,7 @@
+import os
+
 DEFAULT_MODELS: dict[str, str] = {
-    "ollama": "qwen3:4b-instruct",
+    "ollama": os.environ.get("OLLAMA_MODEL", "qwen3:4b-instruct"),
     "openai": "gpt-4o-mini",
     "anthropic": "claude-sonnet-4-20250514",
     "gemini": "gemini-2.0-flash",

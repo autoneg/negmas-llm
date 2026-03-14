@@ -60,6 +60,7 @@ line-length = 88
 select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "ollama: tests requiring Ollama (local LLM server)",
