@@ -24,25 +24,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Ollama (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          curl -fsSL https://ollama.com/install.sh | sh
-          ollama serve &
-          sleep 5
-          ollama pull qwen3:0.6b
-
-      - name: Install Ollama (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew install ollama
-          ollama serve &
-          sleep 5
-          ollama pull qwen3:0.6b
-
-      # Skip Ollama on Windows - installation is unreliable in CI
-      # Windows will run non-LLM tests only
-
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:
@@ -63,14 +44,7 @@ jobs:
       - name: Run type checker
         run: uv run mypy src/
 
-      - name: Run tests (including slow LLM tests)
-        if: runner.os != 'Windows'
-        run: uv run pytest --tb=short
-        env:
-          OLLAMA_MODEL: qwen3:0.6b
-
-      - name: Run tests (skip LLM tests on Windows)
-        if: runner.os == 'Windows'
+      - name: Run tests (skip slow LLM tests in CI)
         run: uv run pytest -m "not slow" --tb=short
 
   # Run on Python 3.14 separately (may have compatibility issues)
@@ -80,13 +54,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Ollama
-        run: |
-          curl -fsSL https://ollama.com/install.sh | sh
-          ollama serve &
-          sleep 5
-          ollama pull qwen3:0.6b
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -108,7 +75,5 @@ jobs:
       - name: Run type checker
         run: uv run mypy src/
 
-      - name: Run tests (including slow LLM tests)
-        run: uv run pytest --tb=short
-        env:
-          OLLAMA_MODEL: qwen3:0.6b
+      - name: Run tests (skip slow LLM tests in CI)
+        run: uv run pytest -m "not slow" --tb=short
