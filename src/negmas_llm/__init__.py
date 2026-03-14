@@ -63,6 +63,16 @@ from negmas_llm.negotiator import (
     TogetherAINegotiator,
     VLLMNegotiator,
 )
+from negmas_llm.nonllm import (
+    ACCEPTANCE_MESSAGES,
+    CHANGE_PHRASES,
+    COMPARISON_WORDS,
+    OPENING_OFFER_ENDERS,
+    OPENING_OFFER_STARTERS,
+    REJECTION_ENDERS,
+    REJECTION_STARTERS,
+    TemplateBasedAdapterNegotiator,
+)
 from negmas_llm.tags import (
     Tag,
     TagContext,
@@ -345,6 +355,13 @@ if is_meta_negotiator_available():
         tags={"llm", "sao", "meta", "hybrid"},
     )
 
+# Non-LLM negotiators (template-based, no LLM calls)
+negotiator_registry.register(
+    TemplateBasedAdapterNegotiator,
+    source=_NEGOTIATOR_SOURCE,
+    tags={"sao", "meta", "template", "non-llm"},
+)
+
 # =============================================================================
 # Register components with negmas registry
 # =============================================================================
@@ -496,4 +513,14 @@ __all__ = [
     "get_available_tags",
     "get_tag_documentation",
     "print_tag_help",
+    # Non-LLM negotiators
+    "TemplateBasedAdapterNegotiator",
+    # Template constants for TemplateBasedAdapterNegotiator
+    "ACCEPTANCE_MESSAGES",
+    "CHANGE_PHRASES",
+    "COMPARISON_WORDS",
+    "REJECTION_STARTERS",
+    "REJECTION_ENDERS",
+    "OPENING_OFFER_STARTERS",
+    "OPENING_OFFER_ENDERS",
 ]
