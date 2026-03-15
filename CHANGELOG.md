@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `HybridWithTextNegotiator` - Hybrid negotiator (HybridOfferingPolicy + ACNext acceptance)
+  with template-based text messages (no LLM calls)
 - `verbose` parameter to `LLMNegotiator` and `LLMMetaNegotiator` (default `False`) to print
   LLM prompts and responses to stdout with rich formatting and timing information
 - Non-LLM template-based negotiators for generating human-readable text without LLM calls:
