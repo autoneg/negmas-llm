@@ -8,6 +8,7 @@ from negmas.gb import (
     LinearTBNegotiator,
 )
 from negmas.gb.common import ExtendedResponseType, ResponseType
+from negmas.gb.negotiators.hybrid import HybridNegotiator
 from negmas.outcomes import ExtendedOutcome
 from negmas.sao import SAONegotiator, SAOState
 from negmas.sao.negotiators.meta import SAOMetaNegotiator
@@ -17,6 +18,7 @@ __all__ = [
     "BoulwareWithTextNegotiator",
     "ConcederWithTextNegotiator",
     "LinearWithTextNegotiator",
+    "HybridWithTextNegotiator",
     "ACCEPTANCE_MESSAGES",
     "CHANGE_PHRASES",
     "COMPARISON_WORDS",
@@ -519,3 +521,36 @@ class LinearWithTextNegotiator(TemplateBasedAdapterNegotiator):
             **kwargs: Additional arguments passed to TemplateBasedAdapterNegotiator.
         """
         super().__init__(base_negotiator=LinearTBNegotiator(), **kwargs)
+
+
+class HybridWithTextNegotiator(TemplateBasedAdapterNegotiator):
+    """Hybrid negotiator with template-based text messages.
+
+    A hybrid negotiator that combines multiple strategies using HybridOfferingPolicy
+    and ACNext acceptance policy, with template-based text accompanying each offer.
+    Unlike LLMHybridNegotiator, this uses predefined templates instead of LLM calls.
+
+    Args:
+        alpha: Parameter for the ACNext acceptance policy (default: 1.0).
+            Controls the acceptance threshold relative to the next expected offer.
+        beta: Parameter for the ACNext acceptance policy (default: 0.0).
+            Adds a constant offset to the acceptance threshold.
+        **kwargs: Additional arguments passed to TemplateBasedAdapterNegotiator.
+    """
+
+    def __init__(
+        self,
+        *,
+        alpha: float = 1.0,
+        beta: float = 0.0,
+        **kwargs,
+    ) -> None:
+        """Initialize with a HybridNegotiator as the base strategy.
+
+        Args:
+            alpha: Parameter for the ACNext acceptance policy (default: 1.0).
+            beta: Parameter for the ACNext acceptance policy (default: 0.0).
+            **kwargs: Additional arguments passed to TemplateBasedAdapterNegotiator.
+        """
+        base_negotiator = HybridNegotiator(alpha=alpha, beta=beta)
+        super().__init__(base_negotiator=base_negotiator, **kwargs)

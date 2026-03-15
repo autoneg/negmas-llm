@@ -73,6 +73,7 @@ from negmas_llm.nonllm import (
     REJECTION_STARTERS,
     BoulwareWithTextNegotiator,
     ConcederWithTextNegotiator,
+    HybridWithTextNegotiator,
     LinearWithTextNegotiator,
     TemplateBasedAdapterNegotiator,
 )
@@ -383,6 +384,12 @@ negotiator_registry.register(
     tags={"sao", "meta", "template", "non-llm", "linear"},
 )
 
+negotiator_registry.register(
+    HybridWithTextNegotiator,
+    source=_NEGOTIATOR_SOURCE,
+    tags={"sao", "meta", "template", "non-llm", "hybrid"},
+)
+
 # =============================================================================
 # Register components with negmas registry
 # =============================================================================
@@ -539,6 +546,7 @@ __all__ = [
     "BoulwareWithTextNegotiator",
     "ConcederWithTextNegotiator",
     "LinearWithTextNegotiator",
+    "HybridWithTextNegotiator",
     # Template constants for TemplateBasedAdapterNegotiator
     "ACCEPTANCE_MESSAGES",
     "CHANGE_PHRASES",

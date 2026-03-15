@@ -19,6 +19,7 @@ from negmas_llm import (
     REJECTION_STARTERS,
     BoulwareWithTextNegotiator,
     ConcederWithTextNegotiator,
+    HybridWithTextNegotiator,
     LinearWithTextNegotiator,
     TemplateBasedAdapterNegotiator,
 )
@@ -660,3 +661,111 @@ class TestWithTextNegotiatorsMixedNegotiation:
 
         # All strategies should produce valid offers
         assert all(offer is not None for offer in all_first_offers.values())
+
+
+class TestHybridWithTextNegotiator:
+    """Tests for HybridWithTextNegotiator."""
+
+    def test_initialization(self):
+        """Test that HybridWithTextNegotiator initializes correctly."""
+        from negmas.gb.negotiators.hybrid import HybridNegotiator
+
+        negotiator = HybridWithTextNegotiator()
+        assert negotiator.base_negotiator is not None
+        assert isinstance(negotiator.base_negotiator, HybridNegotiator)
+
+    def test_initialization_with_name(self):
+        """Test that name is properly set."""
+        negotiator = HybridWithTextNegotiator(name="hybrid_test")
+        assert negotiator.name == "hybrid_test"
+
+    def test_initialization_with_alpha_beta(self):
+        """Test that alpha and beta parameters are passed to HybridNegotiator."""
+        from negmas.gb.negotiators.hybrid import HybridNegotiator
+
+        negotiator = HybridWithTextNegotiator(alpha=0.5, beta=0.1)
+        assert negotiator.base_negotiator is not None
+        assert isinstance(negotiator.base_negotiator, HybridNegotiator)
+
+    def test_propose_returns_extended_outcome(self, simple_negotiation_setup):
+        """Test that propose returns an ExtendedOutcome with text."""
+        outcome_space, ufun1, _ = simple_negotiation_setup
+
+        negotiator = HybridWithTextNegotiator(ufun=ufun1)
+        mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=10)
+        mechanism.add(negotiator)
+
+        state = mechanism.state
+        proposal = negotiator.propose(state)
+
+        assert proposal is not None
+        assert isinstance(proposal, ExtendedOutcome)
+        assert proposal.data is not None
+        assert "text" in proposal.data
+        assert len(proposal.data["text"]) > 0
+
+    def test_negotiation_runs(self, simple_negotiation_setup):
+        """Test that HybridWithTextNegotiator can complete a negotiation."""
+        outcome_space, ufun1, ufun2 = simple_negotiation_setup
+
+        negotiator1 = HybridWithTextNegotiator(ufun=ufun1, name="hybrid1")
+        negotiator2 = ConcederWithTextNegotiator(ufun=ufun2, name="conceder1")
+
+        mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=20)
+        mechanism.add(negotiator1)
+        mechanism.add(negotiator2)
+
+        result = mechanism.run()
+
+        assert result is not None
+        assert result.started
+        assert mechanism.state.ended
+
+    def test_hybrid_vs_hybrid_negotiation(self, simple_negotiation_setup):
+        """Test two HybridWithTextNegotiators negotiating."""
+        outcome_space, ufun1, ufun2 = simple_negotiation_setup
+
+        negotiator1 = HybridWithTextNegotiator(ufun=ufun1, name="hybrid1")
+        negotiator2 = HybridWithTextNegotiator(ufun=ufun2, name="hybrid2")
+
+        mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=30)
+        mechanism.add(negotiator1)
+        mechanism.add(negotiator2)
+
+        result = mechanism.run()
+
+        assert result is not None
+        assert result.started
+
+        # Check that offers have text
+        trace = mechanism.full_trace
+        offers_with_text = [
+            t for t in trace if t.offer is not None and t.data and "text" in t.data
+        ]
+        assert len(offers_with_text) > 0, "Expected offers to have generated text"
+
+
+class TestHybridWithTextNegotiatorExports:
+    """Test that HybridWithTextNegotiator is exported."""
+
+    def test_hybrid_with_text_exported(self):
+        """Test that HybridWithTextNegotiator is exported."""
+        from negmas_llm import HybridWithTextNegotiator
+
+        assert HybridWithTextNegotiator is not None
+
+
+class TestHybridWithTextNegotiatorRegistry:
+    """Test that HybridWithTextNegotiator is registered."""
+
+    def test_hybrid_registered(self):
+        """Test that HybridWithTextNegotiator is registered."""
+        from negmas.registry import negotiator_registry
+
+        from negmas_llm import HybridWithTextNegotiator
+
+        assert negotiator_registry.is_registered(HybridWithTextNegotiator)
+        info = negotiator_registry.get_by_class(HybridWithTextNegotiator)
+        assert info is not None
+        assert "hybrid" in info.tags
+        assert "non-llm" in info.tags
