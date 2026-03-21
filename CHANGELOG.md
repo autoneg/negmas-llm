@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Environment variable support for default models: `NEGMAS_LLM_<PROVIDER>_DEFAULT_MODEL`
+  (e.g., `NEGMAS_LLM_OLLAMA_DEFAULT_MODEL`, `NEGMAS_LLM_OPENAI_DEFAULT_MODEL`)
+- Environment variable support for timeout and retries:
+  - `NEGMAS_LLM_TIMEOUT` - Default timeout for LLM calls
+  - `NEGMAS_LLM_NUM_RETRIES` - Default number of retries for LLM calls
+- `timeout` and `num_retries` parameters for `LLMNegotiator` and `LLMMetaNegotiator`
+- Documentation page for environment variables (`docs/guide/environment-variables.md`)
+- Tests for environment variable model selection
+
+### Changed
+- Legacy `OLLAMA_MODEL` environment variable is still supported for backwards compatibility
+  but `NEGMAS_LLM_OLLAMA_DEFAULT_MODEL` takes precedence
+
 ## [0.4.2] - 2026-03-15
 
 ### Added

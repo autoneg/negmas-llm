@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+# For local LLM testing with Ollama, pull these models:
+#   ollama pull qwen3:4b-instruct  # Default model
+#   ollama pull smollm2:135m       # Smaller/faster model for testing
+# Set NEGMAS_LLM_OLLAMA_DEFAULT_MODEL or OLLAMA_MODEL to override the default.
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}

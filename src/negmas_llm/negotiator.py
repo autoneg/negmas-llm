@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import textwrap
 import time
@@ -416,6 +417,8 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 1024,
+        timeout: float | int | None = None,
+        num_retries: int | None = None,
         use_structured_output: bool = True,
         include_reasoning: bool = False,
         verbose: bool = False,
@@ -452,6 +455,18 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         self.api_base = api_base
         self.temperature = temperature
         self.max_tokens = max_tokens
+        # Timeout: use provided value, or fall back to NEGMAS_LLM_TIMEOUT env var
+        if timeout is not None:
+            self.timeout = timeout
+        else:
+            env_timeout = os.environ.get("NEGMAS_LLM_TIMEOUT")
+            self.timeout = float(env_timeout) if env_timeout else None
+        # Num retries: use provided value, or fall back to env var
+        if num_retries is not None:
+            self.num_retries = num_retries
+        else:
+            env_retries = os.environ.get("NEGMAS_LLM_NUM_RETRIES")
+            self.num_retries = int(env_retries) if env_retries else None
         self.use_structured_output = use_structured_output
         self.include_reasoning = include_reasoning
         self.verbose = verbose
@@ -614,6 +629,10 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             kwargs["api_key"] = self.api_key
         if self.api_base:
             kwargs["api_base"] = self.api_base
+        if self.timeout is not None:
+            kwargs["timeout"] = self.timeout
+        if self.num_retries is not None:
+            kwargs["num_retries"] = self.num_retries
 
         # Add structured output / JSON mode if requested and supported
         if require_json and self.use_structured_output:

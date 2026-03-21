@@ -70,6 +70,7 @@ nav:
   - User Guide:
     - Overview: guide/overview.md
     - Providers: guide/providers.md
+    - Environment Variables: guide/environment-variables.md
     - Customization: guide/customization.md
   - API Reference:
     - Negotiators: api/negotiators.md

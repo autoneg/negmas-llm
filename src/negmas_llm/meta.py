@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import textwrap
 import time
@@ -140,6 +141,8 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         api_base: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        timeout: float | int | None = None,
+        num_retries: int | None = None,
         verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
@@ -159,6 +162,18 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         self.api_base = api_base
         self.temperature = temperature
         self.max_tokens = max_tokens
+        # Timeout: use provided value, or fall back to NEGMAS_LLM_TIMEOUT env var
+        if timeout is not None:
+            self.timeout = timeout
+        else:
+            env_timeout = os.environ.get("NEGMAS_LLM_TIMEOUT")
+            self.timeout = float(env_timeout) if env_timeout else None
+        # Num retries: use provided value, or fall back to env var
+        if num_retries is not None:
+            self.num_retries = num_retries
+        else:
+            env_retries = os.environ.get("NEGMAS_LLM_NUM_RETRIES")
+            self.num_retries = int(env_retries) if env_retries else None
         self.verbose = verbose
         self._custom_system_prompt = system_prompt
         self.llm_kwargs = llm_kwargs or {}
@@ -394,6 +409,10 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
             kwargs["api_key"] = self.api_key
         if self.api_base:
             kwargs["api_base"] = self.api_base
+        if self.timeout is not None:
+            kwargs["timeout"] = self.timeout
+        if self.num_retries is not None:
+            kwargs["num_retries"] = self.num_retries
 
         # Print prompt if verbose mode is enabled (using rich)
         console = Console() if self.verbose else None
