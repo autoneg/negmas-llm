@@ -917,8 +917,44 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         # Parse outcome
         outcome: Outcome | None = None
         outcome_data = data.get("outcome")
-        if outcome_data is not None and isinstance(outcome_data, list):
-            outcome = tuple(outcome_data)
+        if outcome_data is not None:
+            if isinstance(outcome_data, list):
+                outcome = tuple(outcome_data)
+            elif isinstance(outcome_data, dict):
+                # LLM returned a dict like {"issue1": "value1", "issue2": "value2"}
+                # Convert to tuple in the correct issue order
+                if self.nmi is not None and self.nmi.outcome_space is not None:
+                    try:
+                        issues = self.nmi.outcome_space.issues  # type: ignore[attr-defined]
+                        if issues:
+                            # Try to match by issue name
+                            values = []
+                            for issue in issues:
+                                issue_name = issue.name
+                                if issue_name in outcome_data:
+                                    values.append(outcome_data[issue_name])
+                                else:
+                                    # Try case-insensitive match
+                                    found = False
+                                    for key, val in outcome_data.items():
+                                        if key.lower() == issue_name.lower():
+                                            values.append(val)
+                                            found = True
+                                            break
+                                    if not found:
+                                        # If we can't find a match, use values in order
+                                        break
+                            if len(values) == len(issues):
+                                outcome = tuple(values)
+                            else:
+                                # Fallback: use dict values in order
+                                outcome = tuple(outcome_data.values())
+                    except AttributeError:
+                        # Fallback: use dict values in order
+                        outcome = tuple(outcome_data.values())
+                else:
+                    # No outcome space info, use dict values in order
+                    outcome = tuple(outcome_data.values())
 
         # Parse text (message to send to opponent) and reasoning
         text = data.get("text")
