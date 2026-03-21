@@ -456,12 +456,14 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         self.temperature = temperature
         self.max_tokens = max_tokens
         # Timeout: use provided value, or fall back to NEGMAS_LLM_TIMEOUT env var
+        self.timeout: float | int | None
         if timeout is not None:
             self.timeout = timeout
         else:
             env_timeout = os.environ.get("NEGMAS_LLM_TIMEOUT")
             self.timeout = float(env_timeout) if env_timeout else None
         # Num retries: use provided value, or fall back to env var
+        self.num_retries: int | None
         if num_retries is not None:
             self.num_retries = num_retries
         else:

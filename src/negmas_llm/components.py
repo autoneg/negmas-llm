@@ -615,11 +615,59 @@ class LLMOfferingPolicy(OfferingPolicy, LLMComponentMixin):
 
         outcome: Outcome | None = None
         outcome_data = data.get("outcome")
-        if outcome_data is not None and isinstance(outcome_data, list):
-            outcome = tuple(outcome_data)
+        if outcome_data is not None:
+            if isinstance(outcome_data, list):
+                outcome = tuple(outcome_data)
+            elif isinstance(outcome_data, dict):
+                # LLM returned dict - convert to tuple in correct issue order
+                outcome = self._dict_to_outcome_tuple(outcome_data)
 
         text = data.get("text")
         return outcome, text
+
+    def _dict_to_outcome_tuple(self, outcome_dict: dict[str, Any]) -> Outcome:
+        """Convert a dict outcome to a tuple in the correct issue order.
+
+        Args:
+            outcome_dict: Dict mapping issue names to values.
+
+        Returns:
+            Outcome tuple with values in the correct issue order.
+        """
+        if self.negotiator is None:
+            return tuple(outcome_dict.values())
+
+        nmi = getattr(self.negotiator, "nmi", None)
+        if nmi is None or nmi.outcome_space is None:
+            return tuple(outcome_dict.values())
+
+        try:
+            issues = nmi.outcome_space.issues  # type: ignore[attr-defined]
+            if not issues:
+                return tuple(outcome_dict.values())
+
+            values = []
+            for issue in issues:
+                issue_name = issue.name
+                if issue_name in outcome_dict:
+                    values.append(outcome_dict[issue_name])
+                else:
+                    # Try case-insensitive match
+                    found = False
+                    for key, val in outcome_dict.items():
+                        if key.lower() == issue_name.lower():
+                            values.append(val)
+                            found = True
+                            break
+                    if not found:
+                        # Can't match all issues, fall back to dict values order
+                        return tuple(outcome_dict.values())
+
+            if len(values) == len(issues):
+                return tuple(values)
+            return tuple(outcome_dict.values())
+        except AttributeError:
+            return tuple(outcome_dict.values())
 
     def __call__(self, state: GBState, dest: str | None = None) -> Outcome | None:
         """Generate an offer using the LLM.

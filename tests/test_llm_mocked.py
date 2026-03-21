@@ -381,3 +381,96 @@ class TestResponseTypeParsing:
             data = json.loads(response_json)
             # wait should NOT be in valid types
             assert data["response"] not in ["accept", "reject", "end"]
+
+
+class TestOutcomeParsing:
+    """Test that outcomes are always returned as tuples, not dicts."""
+
+    def test_dict_outcome_converted_to_tuple(self, simple_negotiation_setup):
+        """Test that dict outcomes from LLM are converted to tuples."""
+        outcome_space, ufun1, ufun2 = simple_negotiation_setup
+
+        # Get issue names
+        issue_names = [issue.name for issue in outcome_space.issues]
+
+        # Create a dict outcome (as LLM might return)
+        outcome_dict = {issue_names[0]: 150, issue_names[1]: 2}
+
+        # Mock response with dict outcome
+        mock_response = create_mock_llm_response(
+            json.dumps(
+                {
+                    "response_type": "reject",
+                    "outcome": outcome_dict,
+                    "text": "Counter offer",
+                    "reasoning": "Testing dict parsing",
+                }
+            )
+        )
+
+        with patch("litellm.completion", return_value=mock_response):
+            negotiator = OllamaNegotiator(
+                model="test-model",
+                name="test_negotiator",
+                ufun=ufun1,
+            )
+
+            mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=5)
+            mechanism.add(negotiator)
+            mechanism.add(AspirationNegotiator(name="opponent", ufun=ufun2))
+
+            # Run one step
+            mechanism.step()
+
+            # Get the trace and check the outcome type
+            if mechanism.trace:
+                _, offer = mechanism.trace[-1]
+                if offer is not None:
+                    # The offer should be a tuple, not a dict
+                    assert isinstance(offer, tuple), (
+                        f"Outcome should be tuple, got {type(offer)}"
+                    )
+                    assert not isinstance(offer, dict), "Outcome should not be a dict"
+
+    def test_list_outcome_converted_to_tuple(self, simple_negotiation_setup):
+        """Test that list outcomes from LLM are converted to tuples."""
+        outcome_space, ufun1, ufun2 = simple_negotiation_setup
+
+        # Create a list outcome
+        outcome_list = [150, 2]
+
+        # Mock response with list outcome
+        mock_response = create_mock_llm_response(
+            json.dumps(
+                {
+                    "response_type": "reject",
+                    "outcome": outcome_list,
+                    "text": "Counter offer",
+                    "reasoning": "Testing list parsing",
+                }
+            )
+        )
+
+        with patch("litellm.completion", return_value=mock_response):
+            negotiator = OllamaNegotiator(
+                model="test-model",
+                name="test_negotiator",
+                ufun=ufun1,
+            )
+
+            mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=5)
+            mechanism.add(negotiator)
+            mechanism.add(AspirationNegotiator(name="opponent", ufun=ufun2))
+
+            # Run one step
+            mechanism.step()
+
+            # Get the trace and check the outcome type
+            if mechanism.trace:
+                _, offer = mechanism.trace[-1]
+                if offer is not None:
+                    # The offer should be a tuple, not a list
+                    assert isinstance(offer, tuple), (
+                        f"Outcome should be tuple, got {type(offer)}"
+                    )
+                    assert not isinstance(offer, list), "Outcome should not be a list"
