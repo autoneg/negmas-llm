@@ -1,0 +1,9 @@
+{
+	"venvPath": ".venv",
+	"venv": ".",
+	"include": ["src/**/*.py", "tests/**/*.py"],
+	"exclude": ["**/__pycache__"],
+	"useLibraryCodeForTypes": true,
+	"pythonVersion": "3.11",
+	"typeCheckingMode": "basic"
+}

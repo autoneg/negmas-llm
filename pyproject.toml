@@ -1,0 +1,88 @@
+[project]
+name = "negmas-llm"
+version = "0.4.3"
+description = "LLM-based negotiators for the negmas negotiation framework"
+readme = "README.md"
+license = "AGPL-3.0-or-later"
+authors = [
+    { name = "Yasser Mohammad", email = "yasserfarouk@gmail.com" }
+]
+requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+keywords = ["negotiation", "llm", "agents", "ai", "negmas"]
+dependencies = [
+    "litellm>=1.80.11",
+    "negmas>=0.15.2",
+    "rich>=13.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/autoneg/negmas-llm"
+Documentation = "https://negmas-llm.readthedocs.io"
+Repository = "https://github.com/autoneg/negmas-llm"
+Issues = "https://github.com/autoneg/negmas-llm/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pre-commit>=4.5.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.5,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["litellm.*", "negmas.*"]
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "ollama: tests requiring Ollama (local LLM server)",
+    "openai: tests requiring OpenAI API access",
+    "anthropic: tests requiring Anthropic API access",
+    "gemini: tests requiring Google Gemini API access",
+    "copilot: tests requiring GitHub Copilot API access",
+    "groq: tests requiring Groq API access",
+    "mistral: tests requiring Mistral API access",
+    "deepseek: tests requiring DeepSeek API access",
+    "openrouter: tests requiring OpenRouter API access",
+    "provider: tests for a specific LLM provider",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.15.0",
+    "pre-commit>=4.0.0",
+    "pytest>=9.0.2",
+    "ruff>=0.11.12",
+]
+docs = [
+    "mkdocs-material>=9.6.14",
+    "mkdocstrings[python]>=0.29.1",
+]
