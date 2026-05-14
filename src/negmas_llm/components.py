@@ -49,18 +49,16 @@ DEFAULT_ACCEPTANCE_SYSTEM_PROMPT = _dedent("""
     """)
 
 DEFAULT_ACCEPTANCE_RESPONSE_INSTRUCTIONS = _dedent("""
-    ## Response Format
-
-    Respond with JSON only:
+    Respond with JSON only, in this shape.
     {
         "decision": "accept" | "reject" | "end",
         "reasoning": "brief explanation"
     }
 
-    decision values:
-        accept: accept current offer
-        reject: reject offer (counter-offer generated separately)
-        end: end negotiation without agreement
+    The decision field takes one of these values.
+        1. "accept" means accept the current offer.
+        2. "reject" means reject the offer; a counter-offer is generated separately.
+        3. "end" means end the negotiation without agreement.
     """)
 
 DEFAULT_OFFERING_SYSTEM_PROMPT = _dedent("""
@@ -72,16 +70,14 @@ DEFAULT_OFFERING_SYSTEM_PROMPT = _dedent("""
     """)
 
 DEFAULT_OFFERING_RESPONSE_INSTRUCTIONS = _dedent("""
-    ## Response Format
-
-    Respond with JSON only:
+    Respond with JSON only, in this shape.
     {
         "outcome": [value1, value2, ...],
         "text": "optional message to opponent",
         "reasoning": "brief explanation"
     }
 
-    outcome: list of values in issue order.
+    The outcome field is a list of values in issue order.
     """)
 
 DEFAULT_SUPPORTER_SYSTEM_PROMPT = _dedent("""
@@ -93,7 +89,7 @@ DEFAULT_SUPPORTER_SYSTEM_PROMPT = _dedent("""
 DEFAULT_VALIDATOR_PROMPT = _dedent("""
     You check consistency between negotiation text and actions.
 
-    Respond with JSON only:
+    Respond with JSON only, in this shape.
     {
         "consistent": true | false,
         "issues": ["..."],
@@ -249,7 +245,7 @@ class LLMComponentMixin(ABC):
             os_dict.pop("__python_class__", None)
 
             parts = [
-                "## Outcome Space",
+                "The Outcome Space follows.",
                 "",
                 f"```json\n{json.dumps(os_dict, indent=2, default=str)}\n```",
                 "",
@@ -257,16 +253,16 @@ class LLMComponentMixin(ABC):
             ]
             return "\n".join(parts)
         except Exception:
-            return f"## Outcome Space\n\n{outcome_space}\n"
+            return f"The Outcome Space follows.\n\n{outcome_space}\n"
 
     def format_own_ufun(self, negotiator: Negotiator | None) -> str:
         """Format the utility function for the LLM."""
         if negotiator is None or negotiator.ufun is None:
-            return """## Your Utility Function
-
-You do NOT have a utility function. Negotiate using general principles
-and any instructions provided.
-"""
+            return (
+                "Your Utility Function is not provided. You do NOT have a "
+                "utility function. Negotiate using general principles and "
+                "any instructions provided.\n"
+            )
 
         try:
             ufun_dict = serialize(negotiator.ufun)
@@ -275,7 +271,7 @@ and any instructions provided.
             ufun_str = str(negotiator.ufun)
 
             parts = [
-                "## Your Utility Function",
+                "Your Utility Function follows.",
                 "",
                 "Higher utility is better for you.",
                 "",
@@ -287,11 +283,11 @@ and any instructions provided.
             ]
             return "\n".join(parts)
         except Exception:
-            return f"""## Your Utility Function
-
-Your utility function is {negotiator.ufun}.
-Your reserved value is {negotiator.reserved_value}.
-"""
+            return (
+                "Your Utility Function follows.\n\n"
+                f"Your utility function is {negotiator.ufun}.\n"
+                f"Your reserved value is {negotiator.reserved_value}.\n"
+            )
 
     def format_state(
         self,
@@ -300,7 +296,7 @@ Your reserved value is {negotiator.reserved_value}.
         negotiator: Negotiator | None,
     ) -> str:
         """Format the negotiation state for the LLM."""
-        parts = ["## Current State", ""]
+        parts = ["Current state follows.", ""]
         parts.append(f"    Step is {state.step}.")
         parts.append(f"    Relative time is {state.relative_time:.2%}.")
 
@@ -418,7 +414,7 @@ class LLMAcceptancePolicy(AcceptancePolicy, LLMComponentMixin):
         Returns:
             The user message string.
         """
-        parts = [f"# Round {state.step}", ""]
+        parts = [f"Round {state.step}.", ""]
         parts.append(self.format_state(state, offer, self.negotiator))
 
         if offer is not None:
@@ -565,7 +561,7 @@ class LLMOfferingPolicy(OfferingPolicy, LLMComponentMixin):
         Returns:
             The user message string.
         """
-        parts = [f"# Round {state.step}", ""]
+        parts = [f"Round {state.step}.", ""]
         parts.append(self.format_state(state, None, self.negotiator))
 
         if state.step == 0:

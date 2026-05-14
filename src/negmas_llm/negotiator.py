@@ -136,40 +136,40 @@ DEFAULT_SYSTEM_PROMPT = _dedent("""
     """)
 
 DEFAULT_PREFERENCES_PROMPT = _dedent("""
-    # Negotiation Setup
+    Here is the negotiation setup.
 
-    ## Mechanism
+    Mechanism information follows.
     {nmi_docstring}
     {{{{nmi:text}}}}
 
-    ## Outcome Space
+    The outcome space follows.
     {{{{outcome-space:json}}}}
 
-    ## Your Utility Function
+    Your utility function follows.
     {ufun_docstring}
     {{{{utility-function:text}}}}
     Your reserved value is {{{{reserved-value}}}}.
 
-    ## Opponent's Utility Function
+    The opponent's utility function follows.
     {{{{opponent-utility-function:text}}}}
     """).format(nmi_docstring=_SAONMI_DOCSTRING, ufun_docstring=_UFUN_DOCSTRING)
 
 DEFAULT_PREFERENCES_CHANGED_PROMPT = _dedent("""
-    # Preferences Changed ({change_types})
+    Your preferences have changed ({change_types}).
 
-    ## Mechanism
+    Mechanism information follows.
     {nmi_docstring}
     {{{{nmi:text}}}}
 
-    ## Outcome Space
+    The outcome space follows.
     {{{{outcome-space:json}}}}
 
-    ## Your Utility Function
+    Your utility function follows.
     {ufun_docstring}
     {{{{utility-function:text}}}}
     Your reserved value is {{{{reserved-value}}}}.
 
-    ## Opponent's Utility Function
+    The opponent's utility function follows.
     {{{{opponent-utility-function:text}}}}
     """).format(
     nmi_docstring=_SAONMI_DOCSTRING,
@@ -178,18 +178,17 @@ DEFAULT_PREFERENCES_CHANGED_PROMPT = _dedent("""
 )
 
 DEFAULT_NEGOTIATION_START_PROMPT = _dedent("""
-    # Negotiation Started
+    The negotiation has started. Each round, choose one of ACCEPT,
+    REJECT (with a counter-offer), or END.
 
-    Each round, decide ACCEPT / REJECT (with counter-offer) / END.
-
-    Rules:
-        1. First offer = your best (highest-utility) outcome.
-        2. Concede slowly based on relative_time and opponent's pace.
-        3. Never accept offers with utility <= reserved_value.
-        4. Never propose offers with utility <= reserved_value.
+    Follow these rules.
+        1. Your first offer is your best (highest-utility) outcome.
+        2. Concede slowly based on relative_time and the opponent's pace.
+        3. Never accept offers with utility at or below your reserved value.
+        4. Never propose offers with utility at or below your reserved value.
         5. END if no acceptable deal exists; that beats a bad agreement.
 
-    Respond with JSON only:
+    Respond with JSON only, in this shape.
     ```json
     {
         "response_type": "accept" | "reject" | "end",
@@ -199,15 +198,15 @@ DEFAULT_NEGOTIATION_START_PROMPT = _dedent("""
     }
     ```
 
-    Notes:
+    Notes.
         1. "accept" requires an offer on the table.
         2. "reject" requires a counter-offer in "outcome".
-        3. With no offer on the table you must propose (use "reject" + outcome).
+        3. With no offer on the table you must propose (use "reject" plus outcome).
         4. You must always take an action; you cannot wait.
     """)
 
 DEFAULT_ROUND_PROMPT = _dedent("""
-    # Round {step}
+    Round {step}.
 
     Step is {step}. Time is {relative_time:.1%}. Running is {running}.
 
@@ -1024,7 +1023,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             os_dict.pop("__python_class__", None)
 
             parts = [
-                "## Outcome Space",
+                "The Outcome Space follows.",
                 "",
                 f"```json\n{json.dumps(os_dict, indent=2, default=str)}\n```",
                 "",
@@ -1032,16 +1031,15 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             ]
             return "\n".join(parts)
         except Exception:
-            return f"## Outcome Space\n\n{outcome_space}\n"
+            return f"The Outcome Space follows.\n\n{outcome_space}\n"
 
     def format_own_ufun(self, state: SAOState) -> str:
         """Format your own utility function for the LLM."""
         if self.ufun is None:
             return _dedent("""
-                ## Your Utility Function
-
-                You do NOT have a utility function. Negotiate using general principles
-                and any instructions provided.
+                Your Utility Function is not provided. You do NOT have a utility
+                function. Negotiate using general principles and any
+                instructions provided.
                 """)
 
         try:
@@ -1051,7 +1049,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             ufun_str = str(self.ufun)
 
             parts = [
-                "## Your Utility Function",
+                "Your Utility Function follows.",
                 "",
                 "Higher utility is better for you.",
                 "",
@@ -1064,7 +1062,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             return "\n".join(parts)
         except Exception:
             return _dedent(f"""
-                ## Your Utility Function
+                Your Utility Function follows.
 
                 Your utility function is {self.ufun}.
                 Your reserved value is {self.reserved_value}.
@@ -1078,9 +1076,8 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
 
         if partner_ufun is None:
             return _dedent("""
-                ## Partner's Utility Function
-
-                Unknown. Infer their preferences from their offers.
+                The partner's Utility Function is unknown. Infer their
+                preferences from their offers.
                 """)
 
         try:
@@ -1090,7 +1087,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             ufun_str = str(partner_ufun)
 
             parts = [
-                "## Partner's Utility Function (Known)",
+                "The partner's Utility Function (known) follows.",
                 "",
                 f"Partner's utility function is {ufun_str}.",
             ]
@@ -1104,9 +1101,9 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             return "\n".join(parts)
         except Exception:
             return _dedent(f"""
-                ## Partner's Utility Function (Known)
+                The partner's Utility Function (known).
 
-                Partner utility function: {partner_ufun}
+                Partner utility function is {partner_ufun}.
                 """)
 
     def format_nmi_info(self) -> str:
@@ -1114,7 +1111,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         if self.nmi is None:
             return ""
 
-        parts = ["## Mechanism", ""]
+        parts = ["Mechanism information follows.", ""]
 
         n_steps = self.nmi.n_steps
         parts.append(
@@ -1146,7 +1143,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
 
     def format_state(self, state: SAOState, offer: Outcome | None = None) -> str:
         """Format the complete SAOState for the LLM."""
-        parts = ["## Current State", ""]
+        parts = ["Current state follows.", ""]
 
         parts.append(f"    Step is {state.step}.")
         parts.append(f"    Relative time is {state.relative_time:.2%}.")

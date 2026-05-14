@@ -550,15 +550,15 @@ class TagContext:
         if self.format == TagFormat.JSON:
             return json.dumps(data, indent=2, default=str)
         else:
-            # Text format - simple key: value pairs
+            # Text format - natural-language "key is value." statements.
             lines = []
             for key, value in data.items():
                 if isinstance(value, dict):
-                    lines.append(f"{key}:")
+                    lines.append(f"{key} contains the following.")
                     for k, v in value.items():
-                        lines.append(f"  {k}: {v}")
+                        lines.append(f"    {k} is {v}.")
                 else:
-                    lines.append(f"{key}: {value}")
+                    lines.append(f"{key} is {value}.")
             return "\n".join(lines)
 
     def get_k_param(self, default: int = 0) -> int:
@@ -946,14 +946,14 @@ def _handle_outcome_space(ctx: TagContext) -> str:
         try:
             os_dict = serialize(outcome_space)
             os_dict.pop("__python_class__", None)
-            lines = ["Outcome Space:"]
+            lines = ["The Outcome Space follows."]
             if "issues" in os_dict:
                 for issue in os_dict["issues"]:
                     name = issue.get("name", "unnamed")
                     values = issue.get("values", [])
-                    lines.append(f"  - {name}: {values}")
+                    lines.append(f"    Issue {name} has values {values}.")
             else:
-                lines.append(f"  {outcome_space}")
+                lines.append(f"    {outcome_space}")
             return "\n".join(lines)
         except Exception:
             return str(outcome_space)
@@ -985,10 +985,9 @@ def _format_linear_additive_ufun(ufun: Any, negotiator: Any) -> str:
         # Fallback for non-linear-additive functions
         return str(ufun)
 
-    lines.append("**How to calculate your utility for an outcome:**")
-    lines.append("Total utility = sum of (contribution from each issue)")
-    lines.append("")
-    lines.append("For each issue below, find your value's contribution, then sum them.")
+    lines.append("To compute your utility for an outcome, sum the contribution")
+    lines.append("from each issue. For each issue below, look up your value's")
+    lines.append("contribution and add them together.")
     lines.append("")
 
     # Get issue names from outcome space if available
@@ -1008,8 +1007,8 @@ def _format_linear_additive_ufun(ufun: Any, negotiator: Any) -> str:
     for i, (name, weight, vfun) in enumerate(
         zip(issue_names, weights, values, strict=False)
     ):
-        lines.append(f"**{name}** (weight: {weight:.3f})")
-        lines.append("Value → Contribution to total utility:")
+        lines.append(f"Issue {name} has weight {weight:.3f}.")
+        lines.append("Each possible value contributes the following to total utility.")
 
         # Try to get value utilities (WEIGHTED)
         if i < len(issue_values_list) and issue_values_list[i]:
@@ -1018,9 +1017,11 @@ def _format_linear_additive_ufun(ufun: Any, negotiator: Any) -> str:
                 try:
                     raw_u = vfun(val)
                     weighted_u = weight * raw_u
-                    value_utils.append(f"  - {val} → +{weighted_u:.3f}")
+                    value_utils.append(
+                        f"    Value {val} contributes +{weighted_u:.3f}."
+                    )
                 except Exception:
-                    value_utils.append(f"  - {val} → ?")
+                    value_utils.append(f"    Value {val} contributes ?.")
             lines.extend(value_utils)
         lines.append("")
 
@@ -1043,21 +1044,26 @@ def _format_linear_additive_ufun(ufun: Any, negotiator: Any) -> str:
             for i in range(len(weights))
             if issue_values_list[i]
         )
-        lines.append("**Example calculation:**")
+        lines.append("Example calculation follows.")
         outcome_str = ", ".join(
             f"{name}={val}"
             for name, val in zip(issue_names, example_outcome, strict=False)
         )
-        lines.append(f"Outcome ({outcome_str}):")
+        lines.append(f"For the outcome ({outcome_str}):")
         lines.append(
-            f"  Total utility = {' + '.join(example_contributions)} = {total:.3f}"
+            f"    Total utility is {' + '.join(example_contributions)} "
+            f"which equals {total:.3f}."
         )
         lines.append("")
 
     # Add reserved value prominently
     if reserved is not None:
-        lines.append(f"**RESERVED VALUE (minimum acceptable): {reserved:.3f}**")
-        lines.append("NEVER accept or offer anything with utility <= this value!")
+        lines.append(
+            f"Your reserved value (minimum acceptable utility) is {reserved:.3f}."
+        )
+        lines.append(
+            "NEVER accept or offer anything with utility at or below this value."
+        )
 
     return "\n".join(lines)
 
@@ -1084,7 +1090,10 @@ def _handle_utility_function(ctx: TagContext) -> str:
         else:
             # Fallback for other utility function types
             reserved = ctx.negotiator.reserved_value
-            return f"Utility function: {ufun}\nReserved value: {reserved}"
+            return (
+                f"Your utility function is {ufun}.\n"
+                f"Your reserved value is {reserved}."
+            )
 
 
 def _handle_opponent_utility_function(ctx: TagContext) -> str:
@@ -1106,14 +1115,15 @@ def _handle_opponent_utility_function(ctx: TagContext) -> str:
     else:
         # Text format - use human-readable formatting for linear additive functions
         if hasattr(opponent_ufun, "weights") and hasattr(opponent_ufun, "values"):
-            return "**Opponent's Utility Function:**\n" + _format_linear_additive_ufun(
-                opponent_ufun, ctx.negotiator
+            return (
+                "The opponent's Utility Function follows.\n"
+                + _format_linear_additive_ufun(opponent_ufun, ctx.negotiator)
             )
         else:
             reserved = getattr(opponent_ufun, "reserved_value", None)
-            text = f"Opponent utility function: {opponent_ufun}"
+            text = f"The opponent's utility function is {opponent_ufun}."
             if reserved is not None:
-                text += f"\nOpponent reserved value: {reserved}"
+                text += f"\nThe opponent's reserved value is {reserved}."
             return text
 
 
@@ -1220,10 +1230,10 @@ def _handle_partner_offers(ctx: TagContext) -> str:
         return json.dumps([list(o) for o in offers])
     else:
         if not offers:
-            return "No partner offers yet"
-        lines = ["Partner offers:"]
+            return "No partner offers yet."
+        lines = ["The partner's offers so far are listed below."]
         for i, offer in enumerate(offers, 1):
-            lines.append(f"  {i}. {ctx.format_outcome(offer)}")
+            lines.append(f"    {i}. {ctx.format_outcome(offer)}")
         return "\n".join(lines)
 
 
@@ -1255,13 +1265,13 @@ def _handle_history(ctx: TagContext) -> str:
         return json.dumps(history, indent=2)
     else:
         if not history:
-            return "No negotiation history yet"
-        lines = ["Negotiation history:"]
+            return "No negotiation history yet."
+        lines = ["The negotiation history so far is listed below."]
         for i, item in enumerate(history, 1):
             proposer = item["proposer"]
             offer = item["offer"]
-            offer_str = str(offer) if offer else "None"
-            lines.append(f"  {i}. {proposer}: {offer_str}")
+            offer_str = str(offer) if offer else "no offer"
+            lines.append(f"    {i}. {proposer} offered {offer_str}.")
         return "\n".join(lines)
 
 
@@ -1280,11 +1290,11 @@ def _handle_trace(ctx: TagContext) -> str:
         return json.dumps([(pid, list(o) if o else None) for pid, o in trace])
     else:
         if not trace:
-            return "Empty trace"
-        lines = ["Trace:"]
+            return "The trace is empty."
+        lines = ["The trace is listed below."]
         for i, (pid, outcome) in enumerate(trace, 1):
-            outcome_str = str(outcome) if outcome else "None"
-            lines.append(f"  {i}. {pid}: {outcome_str}")
+            outcome_str = str(outcome) if outcome else "no outcome"
+            lines.append(f"    {i}. {pid} offered {outcome_str}.")
         return "\n".join(lines)
 
 
@@ -1321,17 +1331,20 @@ def _handle_extended_trace(ctx: TagContext) -> str:
         return json.dumps(items, indent=2)
     else:
         if not trace:
-            return "Empty extended trace"
-        lines = ["Extended trace:"]
+            return "The extended trace is empty."
+        lines = ["The extended trace is listed below."]
         for i, item in enumerate(trace, 1):
             step = getattr(item, "step", "?")
             resp = getattr(item, "response", None)
             if resp:
                 resp_type = getattr(resp, "response", "?")
                 outcome = getattr(resp, "outcome", None)
-                lines.append(f"  {i}. Step {step}: {resp_type} - {outcome}")
+                lines.append(
+                    f"    {i}. At step {step} the response was {resp_type} "
+                    f"with outcome {outcome}."
+                )
             else:
-                lines.append(f"  {i}. Step {step}: no response")
+                lines.append(f"    {i}. At step {step} there was no response.")
         return "\n".join(lines)
 
 
@@ -1375,14 +1388,16 @@ def _handle_full_trace(ctx: TagContext) -> str:
         return json.dumps(entries, indent=2)
     else:
         if not entries:
-            return "No trace entries"
-        lines = ["Full negotiation trace:"]
+            return "No trace entries."
+        lines = ["The full negotiation trace is listed below."]
         for entry in entries:
             step = entry.get("step", "?")
             who = entry.get("who", "?")
             outcome = entry.get("outcome")
             resp_type = entry.get("response_type", "offer")
-            lines.append(f"  Step {step}: {who} - {resp_type}: {outcome}")
+            lines.append(
+                f"    At step {step}, {who} chose {resp_type} with outcome {outcome}."
+            )
         return "\n".join(lines)
 
 
@@ -1499,12 +1514,11 @@ def _handle_nmi(ctx: TagContext) -> str:
     if ctx.format == TagFormat.JSON:
         return json.dumps(info, indent=2, default=str)
     else:
-        lines = ["Negotiation Mechanism:"]
+        lines = ["The Negotiation Mechanism has the following properties."]
         for key, value in info.items():
             if value is not None:
-                # Format key as human-readable
-                formatted_key = key.replace("_", " ").title()
-                lines.append(f"  {formatted_key}: {value}")
+                formatted_key = key.replace("_", " ")
+                lines.append(f"    {formatted_key.capitalize()} is {value}.")
         return "\n".join(lines)
 
 
@@ -1548,27 +1562,27 @@ def _handle_current_state(ctx: TagContext) -> str:
     if ctx.format == TagFormat.JSON:
         return json.dumps(info, indent=2, default=str)
     else:
-        lines = ["Current State:"]
-        lines.append(f"  Step: {info['step']}")
-        lines.append(f"  Relative Time: {info['relative_time']:.2%}")
-        lines.append(f"  Running: {info['running']}")
+        lines = ["The current state is as follows."]
+        lines.append(f"    Step is {info['step']}.")
+        lines.append(f"    Relative time is {info['relative_time']:.2%}.")
+        lines.append(f"    Running is {info['running']}.")
 
         if info["current_offer"]:
             offer_str = ctx.format_outcome(tuple(info["current_offer"]))
-            lines.append(f"  Current Offer: {offer_str}")
+            lines.append(f"    Current offer is {offer_str}.")
             if info["current_proposer"]:
-                lines.append(f"  Proposer: {info['current_proposer']}")
+                lines.append(f"    Proposer is {info['current_proposer']}.")
         else:
-            lines.append("  Current Offer: None")
+            lines.append("    There is no current offer on the table.")
 
-        lines.append(f"  Acceptances: {info['n_acceptances']}")
+        lines.append(f"    Number of acceptances is {info['n_acceptances']}.")
 
         if info.get("broken"):
-            lines.append("  Status: BROKEN")
+            lines.append("    Status is BROKEN.")
         if info.get("timedout"):
-            lines.append("  Status: TIMED OUT")
+            lines.append("    Status is TIMED OUT.")
         if info.get("agreement"):
-            lines.append(f"  Agreement: {info['agreement']}")
+            lines.append(f"    Agreement is {info['agreement']}.")
 
         return "\n".join(lines)
 
