@@ -20,7 +20,7 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 
-from negmas_llm.common import DEFAULT_MODELS, apply_max_tokens
+from negmas_llm.common import DEFAULT_MODELS, apply_max_tokens, litellm_model_string
 from negmas_llm.tags import process_prompt
 
 DEFAULT_OLLAMA_MODEL = DEFAULT_MODELS.get("ollama", "qwen3:4b-instruct")
@@ -300,7 +300,7 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         Returns:
             The full model string in litellm format (provider/model).
         """
-        return f"{self.provider}/{self.model}"
+        return litellm_model_string(self.provider, self.model)
 
     def _build_system_prompt(self) -> str:
         """Build the system prompt for text generation.

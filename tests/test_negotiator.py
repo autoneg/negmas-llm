@@ -274,12 +274,18 @@ class TestLLMNegotiatorUnit:
         assert negotiator.name == "test_negotiator"
 
     def test_model_string(self):
-        """Test that get_model_string returns correct format."""
+        """Test that get_model_string returns correct format.
+
+        Ollama is routed through litellm's ``ollama_chat`` provider (so it
+        hits ``/api/chat`` rather than ``/api/generate``), while the public
+        provider attribute stays ``"ollama"``.
+        """
         negotiator = OllamaNegotiator(
             model=OLLAMA_MODEL,
             name="test_negotiator",
         )
-        assert negotiator.get_model_string() == f"ollama/{OLLAMA_MODEL}"
+        assert negotiator.provider == "ollama"
+        assert negotiator.get_model_string() == f"ollama_chat/{OLLAMA_MODEL}"
 
     def test_custom_temperature(self):
         """Test that custom temperature is set correctly."""

@@ -26,7 +26,7 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 
-from negmas_llm.common import DEFAULT_MODELS, apply_max_tokens
+from negmas_llm.common import DEFAULT_MODELS, apply_max_tokens, litellm_model_string
 from negmas_llm.tags import process_prompt as _process_prompt
 
 if TYPE_CHECKING:
@@ -444,7 +444,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         Returns:
             The full model string in litellm format (provider/model).
         """
-        return f"{self.provider}/{self.model}"
+        return litellm_model_string(self.provider, self.model)
 
     # =========================================================================
     # Configurable Prompt Properties

@@ -86,10 +86,25 @@ class LLMConfig:
             except Exception:
                 return False
 
-        # OAuth providers (github_copilot) - skip in CI as they require interactive auth
+        # OAuth providers (github_copilot) - require interactive device-flow
+        # auth on first use. Skip in CI (no interactivity) and skip locally
+        # unless a cached access token exists OR the user explicitly opts in
+        # via NEGMAS_LLM_GITHUB_COPILOT_TEST=1. Otherwise litellm tries the
+        # device flow during the test and fails after 3 attempts.
         if self.provider in OAUTH_PROVIDERS:
-            # In CI environments, OAuth providers can't authenticate interactively
-            return not os.environ.get("CI")
+            if os.environ.get("CI"):
+                return False
+            if os.environ.get("NEGMAS_LLM_GITHUB_COPILOT_TEST"):
+                return True
+            cache_dir = os.path.expanduser("~/.config/litellm/github_copilot")
+            try:
+                for entry in os.listdir(cache_dir):
+                    path = os.path.join(cache_dir, entry)
+                    if os.path.isfile(path) and os.path.getsize(path) > 0:
+                        return True
+            except OSError:
+                pass
+            return False
 
         # Cloud providers - check if API key is available
         if self.provider in API_KEY_ENV_VARS:

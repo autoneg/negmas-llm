@@ -101,6 +101,25 @@ def max_tokens_param_name(provider: str, model: str) -> str:
     return "max_tokens"
 
 
+def litellm_model_string(provider: str, model: str) -> str:
+    """Build the model string passed to ``litellm.completion``.
+
+    For Ollama we route through ``ollama_chat/<model>`` instead of
+    ``ollama/<model>``. The ``ollama`` provider in litellm calls Ollama's
+    ``/api/generate`` endpoint (single-shot prompt; messages get
+    concatenated and the model's chat template may not apply). The
+    ``ollama_chat`` provider calls ``/api/chat``: native chat templating,
+    proper role-based message arrays, the loaded model stays warm via
+    Ollama's keep_alive, and re-tokenisation is incremental — making
+    multi-turn negotiations both faster and more reliable while preserving
+    context. The public ``self.provider`` value stays ``"ollama"``; only
+    the litellm model identifier is rewritten.
+    """
+    if provider.lower() == "ollama":
+        return f"ollama_chat/{model}"
+    return f"{provider}/{model}"
+
+
 def apply_max_tokens(
     kwargs: dict[str, Any],
     provider: str,

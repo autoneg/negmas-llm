@@ -22,7 +22,7 @@ from negmas.gb.components import AcceptancePolicy, GBComponent, OfferingPolicy
 from negmas.inout import serialize
 from negmas.outcomes import Outcome
 
-from negmas_llm.common import apply_max_tokens
+from negmas_llm.common import apply_max_tokens, litellm_model_string
 from negmas_llm.tags import process_prompt
 
 if TYPE_CHECKING:
@@ -139,7 +139,7 @@ class LLMComponentMixin(ABC):
 
     def get_model_string(self) -> str:
         """Get the model string for litellm."""
-        return f"{self.provider}/{self.model}"
+        return litellm_model_string(self.provider, self.model)
 
     def _process_prompt(
         self,

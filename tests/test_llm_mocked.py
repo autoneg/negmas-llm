@@ -232,6 +232,57 @@ class TestLLMNegotiatorInitialization:
         )
         assert negotiator.get_model_string() == "openai/gpt-4o"
 
+    def test_ollama_routes_to_chat_endpoint(self):
+        """Ollama must be routed through litellm's ``ollama_chat`` provider
+        so the request hits ``/api/chat`` (multi-turn, context-preserving,
+        stays-loaded), not the stateless ``/api/generate`` endpoint.
+
+        The public ``provider`` attribute stays ``"ollama"`` so user code
+        and other dispatch logic (e.g., ``apply_max_tokens``) is unaffected.
+        """
+        negotiator = LLMNegotiator(
+            provider="ollama",
+            model="qwen3:1.7b",
+            name="test",
+        )
+        assert negotiator.provider == "ollama"
+        assert negotiator.get_model_string() == "ollama_chat/qwen3:1.7b"
+
+    def test_chat_providers_pass_messages_array(self):
+        """Every provider must use litellm's chat interface: each call
+        passes ``messages=[{role, content}, ...]`` rather than a flat
+        prompt string. This test asserts the structure of the kwargs we
+        send to ``litellm.completion``.
+        """
+        from unittest.mock import MagicMock, patch
+
+        for provider, model in [
+            ("openai", "gpt-4o"),
+            ("anthropic", "claude-sonnet-4-20250514"),
+            ("ollama", "qwen3:1.7b"),
+            ("groq", "llama-3.3-70b-versatile"),
+        ]:
+            negotiator = LLMNegotiator(provider=provider, model=model, name="t")
+            mock_response = MagicMock()
+            mock_response.choices = [MagicMock()]
+            mock_response.choices[0].message.content = "{}"
+            with patch(
+                "negmas_llm.negotiator.litellm.completion",
+                return_value=mock_response,
+            ) as mock:
+                negotiator._call_llm([{"role": "user", "content": "hi"}])
+                kwargs = mock.call_args.kwargs
+                assert "messages" in kwargs, f"{provider} did not send messages"
+                assert isinstance(kwargs["messages"], list)
+                assert all(
+                    isinstance(m, dict) and "role" in m and "content" in m
+                    for m in kwargs["messages"]
+                ), f"{provider} messages are not role-based"
+                assert "prompt" not in kwargs, (
+                    f"{provider} sent a flat 'prompt' (completion mode) "
+                    "instead of 'messages' (chat mode)"
+                )
+
     def test_custom_system_prompt(self):
         """Test custom system prompt."""
         custom_prompt = "You are a friendly negotiator."
