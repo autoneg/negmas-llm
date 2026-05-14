@@ -1,4 +1,5 @@
 import os
+from typing import Any
 
 
 def _get_default_model(provider: str, fallback: str) -> str:
@@ -47,3 +48,73 @@ DEFAULT_MODELS: dict[str, str] = {
         "huggingface", "meta-llama/Llama-3.2-3B-Instruct"
     ),
 }
+
+
+# =============================================================================
+# max_tokens parameter handling per provider/model
+# =============================================================================
+
+# Aliases that mean "max output tokens" across providers. If the user supplies
+# any of these via llm_kwargs (or a per-call override), we treat the token
+# budget as already specified and do not inject our own.
+TOKEN_LIMIT_ALIASES: frozenset[str] = frozenset(
+    {
+        "max_tokens",
+        "max_completion_tokens",  # OpenAI reasoning models (o1/o3/o4, gpt-5, ...)
+        "num_predict",  # Ollama
+        "max_new_tokens",  # HuggingFace text-generation
+        "maxOutputTokens",  # Google Vertex AI (gemini)
+    }
+)
+
+# OpenAI / Azure model name prefixes that require `max_completion_tokens`
+# instead of the legacy `max_tokens`.
+_OPENAI_REASONING_PREFIXES: tuple[str, ...] = (
+    "o1",
+    "o3",
+    "o4",
+    "gpt-5",
+)
+
+
+def _is_openai_reasoning_model(model: str) -> bool:
+    m = model.lower()
+    # Strip optional provider prefix like "openai/o3-mini".
+    if "/" in m:
+        m = m.split("/", 1)[1]
+    return any(m == p or m.startswith(p + "-") for p in _OPENAI_REASONING_PREFIXES)
+
+
+def max_tokens_param_name(provider: str, model: str) -> str:
+    """Return the kwarg name the given provider/model expects for output cap.
+
+    Defaults to `max_tokens` for providers that accept it (Anthropic, Gemini,
+    Mistral, Groq, Cohere, etc. — litellm handles further normalization).
+    Returns `num_predict` for Ollama and `max_completion_tokens` for OpenAI /
+    Azure reasoning models.
+    """
+    p = provider.lower()
+    if p == "ollama":
+        return "num_predict"
+    if p in ("openai", "azure") and _is_openai_reasoning_model(model):
+        return "max_completion_tokens"
+    return "max_tokens"
+
+
+def apply_max_tokens(
+    kwargs: dict[str, Any],
+    provider: str,
+    model: str,
+    max_tokens: int | None,
+) -> None:
+    """Inject the token cap into `kwargs` under the correct provider-specific name.
+
+    Skips injection if the user already supplied any known token-limit alias
+    (e.g., passed `num_predict` directly in `llm_kwargs`) — that override wins.
+    Pass `max_tokens=None` to skip entirely.
+    """
+    if max_tokens is None:
+        return
+    if any(alias in kwargs for alias in TOKEN_LIMIT_ALIASES):
+        return
+    kwargs[max_tokens_param_name(provider, model)] = max_tokens

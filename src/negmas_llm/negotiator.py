@@ -26,7 +26,7 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 
-from negmas_llm.common import DEFAULT_MODELS
+from negmas_llm.common import DEFAULT_MODELS, apply_max_tokens
 from negmas_llm.tags import process_prompt as _process_prompt
 
 if TYPE_CHECKING:
@@ -86,38 +86,35 @@ def _dedent(text: str) -> str:
 # =============================================================================
 
 _SAONMI_DOCSTRING = _dedent("""
-    The Negotiator Mechanism Interface (NMI) provides information about the negotiation:
-    - n_steps: Maximum number of negotiation steps (None = unlimited)
-    - time_limit: Maximum time in seconds (None = unlimited)
-    - n_outcomes: Total number of possible outcomes in the outcome space
-    - n_negotiators: Number of participants in this negotiation
-    - end_on_no_response: If true, negotiation ends when any negotiator returns None
-    - one_offer_per_step: If true, only one negotiator acts per step
-    - offering_is_accepting: If true, making an offer implies accepting it if echoed
+    NMI fields:
+        n_steps: max steps (None = unlimited)
+        time_limit: max seconds (None = unlimited)
+        n_outcomes: total outcomes
+        n_negotiators: participants
+        end_on_no_response: end if any negotiator returns None
+        one_offer_per_step: only one acts per step
+        offering_is_accepting: echoing an offer accepts it
     """)
 
 _SAOSTATE_DOCSTRING = _dedent("""
-    The negotiation state contains:
-    - step: Current negotiation step number (0-indexed)
-    - relative_time: Progress through negotiation (0.0 to 1.0)
-    - running: Whether negotiation is still active
-    - current_offer: The offer currently on the table (or None)
-    - current_proposer: ID of who made the current offer
-    - n_acceptances: Number of acceptances for current offer
-    - broken: True if negotiation ended abnormally
-    - timedout: True if negotiation exceeded time limit
-    - agreement: The final agreed outcome (if any)
+    State fields:
+        step: current step (0-indexed)
+        relative_time: progress 0.0..1.0
+        running: still active
+        current_offer: offer on the table (or None)
+        current_proposer: who made it
+        n_acceptances: acceptances of current offer
+        broken: ended abnormally
+        timedout: exceeded time limit
+        agreement: final agreed outcome (if any)
     """)
 
 _UFUN_DOCSTRING = _dedent("""
-    Your utility function tells you how much you value each possible outcome.
-    The table below shows the **contribution** each value adds to your total
-    utility. Simply **sum the contributions** for all issues to get total utility.
-
-    **reserved_value**: Your ABSOLUTE MINIMUM acceptable utility.
-    - NEVER accept an offer with utility <= reserved_value
-    - NEVER make an offer that gives you utility <= reserved_value
-    - If no agreement above reserved_value is possible, walk away
+    Your utility = sum of contributions for each issue value.
+    reserved_value is your minimum acceptable utility:
+        never accept offers with utility <= reserved_value
+        never propose offers with utility <= reserved_value
+        walk away if no acceptable agreement is possible
     """)
 
 # =============================================================================
@@ -125,79 +122,52 @@ _UFUN_DOCSTRING = _dedent("""
 # =============================================================================
 
 DEFAULT_SYSTEM_PROMPT = _dedent("""
-    You are an expert negotiator participating in an automated negotiation.
-    You are a TOUGH but FLEXIBLE negotiator who aims to maximize your utility
-    while finding mutually acceptable agreements when possible.
+    You are an expert negotiator. Maximize your utility while reaching
+    agreements when possible.
 
-    ## Core Negotiation Strategy
+    Strategy:
+        1. Open strong: first offer = your highest-utility outcome.
+        2. Concede slowly; pace yourself with relative_time and opponent moves.
+        3. Never accept or propose offers with utility <= reserved_value.
+        4. As deadline approaches you may concede more, but never below reserved_value.
+        5. Do not reveal your reserved_value or utility details.
 
-    1. **Start Strong**: Begin with offers that give you HIGH utility (close to
-       your best possible outcome). NEVER start with a weak offer.
-
-    2. **Concede Slowly**: Make small, gradual concessions over time. Consider:
-       - How much time remains (relative_time approaching 1.0 means deadline)
-       - What offers the opponent has made
-       - Whether the opponent is also conceding
-
-    3. **NEVER Violate Your Reservation Value**: Your reserved_value is your
-       absolute minimum acceptable utility. NEVER accept an offer with utility
-       below your reserved_value. NEVER make an offer that could be accepted
-       if it gives you utility below your reserved_value. This is CRITICAL.
-
-    4. **Time Awareness**: As time runs out, you may need to concede more, but
-       NEVER below your reservation value. If no acceptable agreement is
-       possible, it's better to walk away than accept a bad deal.
-
-    5. **Information Hiding**: Do not reveal your reserved_value or utility
-       function details to the opponent.
-
-    You will receive information about the negotiation setup (outcome space,
-    utility functions) at the start, and then be asked to make decisions for
-    each negotiation round.
-
-    Always respond in the exact JSON format requested. Be strategic and
-    rational, aiming to maximize your utility while reaching agreements.
+    Respond strictly in the requested JSON format.
     """)
 
 DEFAULT_PREFERENCES_PROMPT = _dedent("""
     # Negotiation Setup
 
-    You are about to participate in a negotiation. Here is the setup:
-
-    ## Mechanism Information
+    ## Mechanism
     {nmi_docstring}
     {{{{nmi:text}}}}
 
     ## Outcome Space
-    The negotiation outcome space defines possible agreements:
     {{{{outcome-space:json}}}}
 
     ## Your Utility Function
     {ufun_docstring}
     {{{{utility-function:text}}}}
-    Your reserved value (utility of no agreement): {{{{reserved-value}}}}
+    Your reserved value is {{{{reserved-value}}}}.
 
     ## Opponent's Utility Function
     {{{{opponent-utility-function:text}}}}
     """).format(nmi_docstring=_SAONMI_DOCSTRING, ufun_docstring=_UFUN_DOCSTRING)
 
 DEFAULT_PREFERENCES_CHANGED_PROMPT = _dedent("""
-    # Preferences Changed
+    # Preferences Changed ({change_types})
 
-    Your preferences have changed. Change types: {change_types}
-
-    ## Mechanism Information
+    ## Mechanism
     {nmi_docstring}
     {{{{nmi:text}}}}
 
     ## Outcome Space
-    The negotiation outcome space defines possible agreements:
     {{{{outcome-space:json}}}}
 
     ## Your Utility Function
     {ufun_docstring}
     {{{{utility-function:text}}}}
-    Your reserved value (utility of no agreement): {{{{reserved-value}}}}
+    Your reserved value is {{{{reserved-value}}}}.
 
     ## Opponent's Utility Function
     {{{{opponent-utility-function:text}}}}
@@ -210,68 +180,40 @@ DEFAULT_PREFERENCES_CHANGED_PROMPT = _dedent("""
 DEFAULT_NEGOTIATION_START_PROMPT = _dedent("""
     # Negotiation Started
 
-    The negotiation has now started. For each round, you will be asked to:
-    1. Analyze the current state and any offer received
-    2. Decide whether to ACCEPT, or REJECT (with counter-offer)
-    3. Optionally provide persuasive text for the other party
+    Each round, decide ACCEPT / REJECT (with counter-offer) / END.
 
-    ## NEGOTIATION STRATEGY - READ CAREFULLY
+    Rules:
+        1. First offer = your best (highest-utility) outcome.
+        2. Concede slowly based on relative_time and opponent's pace.
+        3. Never accept offers with utility <= reserved_value.
+        4. Never propose offers with utility <= reserved_value.
+        5. END if no acceptable deal exists; that beats a bad agreement.
 
-    **Opening**: Your FIRST offer should be your BEST possible outcome (highest
-    utility for you). Start strong and ambitious.
-
-    **Concession Pattern**: Concede SLOWLY and GRADUALLY based on:
-    - Time pressure (relative_time shows progress toward deadline)
-    - Opponent's concessions (match their pace, don't concede faster)
-    - Previous offers exchanged
-
-    **CRITICAL RULES - ABSOLUTE CONSTRAINTS**:
-    1. NEVER accept an offer with utility BELOW your reserved_value
-    2. NEVER make an offer that gives you utility BELOW your reserved_value
-    3. If time is running out and no acceptable deal exists, END negotiation
-    4. A failed negotiation is BETTER than accepting below reserved_value
-
-    **Accepting Offers**: Only accept when:
-    - The offer's utility is ABOVE your reserved_value (mandatory)
-    - The offer is good enough given time remaining
-    - Further negotiation is unlikely to yield better results
-
-    Respond in this JSON format for each decision:
+    Respond with JSON only:
     ```json
     {
         "response_type": "accept" | "reject" | "end",
         "outcome": [value1, value2, ...] | null,
-        "text": "optional persuasive message to send to your opponent",
-        "reasoning": "brief explanation of your decision (not sent to opponent)"
+        "text": "optional message sent to opponent",
+        "reasoning": "optional, not sent to opponent"
     }
     ```
 
-    Where:
-    - "accept": Accept the current offer on the table (only when there IS an offer)
-    - "reject": Reject current offer and provide a counter-offer in "outcome"
-    - "end": End the negotiation without agreement
-    - "outcome": Your counter-offer as a list matching issue order, or null
-    - "text": A message to send to your opponent (actually delivered to them)
-    - "reasoning": Your internal reasoning (optional, not sent to opponent)
-
-    IMPORTANT:
-    - When there is NO offer on the table, you MUST make a proposal
-      (use "reject" with your desired outcome)
-    - You CANNOT "wait" - you must always take an action (accept/reject/end)
-    - If accepting, the offer must already be on the table
-    - If rejecting or when no offer exists, you must provide an outcome
-
-    Ready to begin!
+    Notes:
+        1. "accept" requires an offer on the table.
+        2. "reject" requires a counter-offer in "outcome".
+        3. With no offer on the table you must propose (use "reject" + outcome).
+        4. You must always take an action; you cannot wait.
     """)
 
 DEFAULT_ROUND_PROMPT = _dedent("""
     # Round {step}
 
-    **Step**: {step} | **Time**: {relative_time:.1%} | **Running**: {running}
+    Step is {step}. Time is {relative_time:.1%}. Running is {running}.
 
     {offer_info}
 
-    What is your decision? Respond with JSON.
+    Your decision (JSON):
     """)
 
 # =============================================================================
@@ -616,12 +558,16 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         self,
         messages: list[dict[str, str]],
         require_json: bool = False,
+        max_tokens: int | None = None,
     ) -> str:
         """Call the LLM and get a response.
 
         Args:
             messages: The conversation messages.
             require_json: If True and provider supports it, enforce JSON output.
+            max_tokens: Per-call override for the output token cap. If None,
+                uses ``self.max_tokens``. A provider-specific alias (e.g.,
+                ``num_predict``) in ``self.llm_kwargs`` always takes precedence.
 
         Returns:
             The LLM response text.
@@ -630,9 +576,17 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             "model": self.get_model_string(),
             "messages": messages,
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
             **self.llm_kwargs,
         }
+        # Route the token cap to the correct provider-specific kwarg
+        # (max_tokens / max_completion_tokens / num_predict / ...).
+        # Skipped if the user supplied any alias in llm_kwargs.
+        apply_max_tokens(
+            kwargs,
+            self.provider,
+            self.model,
+            max_tokens if max_tokens is not None else self.max_tokens,
+        )
 
         if self.api_key:
             kwargs["api_key"] = self.api_key
@@ -833,12 +787,12 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         offer_info_parts = []
         if state.current_offer is not None:
             offer_str = self._format_outcome(state.current_offer)
-            offer_info_parts.append(f"**Offer on table**: {offer_str}")
+            offer_info_parts.append(f"The offer on the table is {offer_str}")
             if state.current_proposer:
                 is_mine = state.current_proposer == self.id
-                proposer_label = "You" if is_mine else state.current_proposer
-                offer_info_parts.append(f" (from {proposer_label})")
-            offer_info_parts.append("\n")
+                proposer_label = "you" if is_mine else state.current_proposer
+                offer_info_parts.append(f" (proposed by {proposer_label})")
+            offer_info_parts.append(".\n")
 
             # Utility of current offer (with defensive handling for invalid offers)
             if self.ufun is not None:
@@ -846,19 +800,22 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
                     utility = self.ufun(state.current_offer)
                     reserved = self.reserved_value
                     offer_info_parts.append(
-                        f"**Your utility for this offer**: {utility:.4f}"
+                        f"Your utility for this offer is {utility:.4f}"
                     )
                     if reserved is not None:
-                        offer_info_parts.append(f" (reserved value: {reserved:.4f})")
-                    offer_info_parts.append("\n")
+                        offer_info_parts.append(
+                            f" (your reserved value is {reserved:.4f})"
+                        )
+                    offer_info_parts.append(".\n")
                 except (TypeError, ValueError):
                     # Invalid offer values, skip utility display
                     offer_info_parts.append(
-                        "**Your utility for this offer**: (invalid offer)\n"
+                        "Your utility for this offer cannot be computed "
+                        "(invalid offer).\n"
                     )
         else:
             offer_info_parts.append(
-                "**No offer on table** - you may make a proposal.\n"
+                "There is no offer on the table; you may make a proposal.\n"
             )
 
         offer_info = "".join(offer_info_parts)
@@ -1066,17 +1023,13 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             os_dict = serialize(outcome_space)
             os_dict.pop("__python_class__", None)
 
-            parts = ["## Outcome Space"]
-            parts.append("")
-            parts.append(
-                "The negotiation outcome space defines the possible agreements:"
-            )
-            parts.append("")
-            parts.append(f"```json\n{json.dumps(os_dict, indent=2, default=str)}\n```")
-            parts.append("")
-            parts.append(
-                "Each outcome is a tuple of values, one for each issue/dimension."
-            )
+            parts = [
+                "## Outcome Space",
+                "",
+                f"```json\n{json.dumps(os_dict, indent=2, default=str)}\n```",
+                "",
+                "Each outcome is a tuple of values, one per issue.",
+            ]
             return "\n".join(parts)
         except Exception:
             return f"## Outcome Space\n\n{outcome_space}\n"
@@ -1087,8 +1040,8 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             return _dedent("""
                 ## Your Utility Function
 
-                You do NOT have a utility function. You must negotiate based on general
-                principles and any instructions provided.
+                You do NOT have a utility function. Negotiate using general principles
+                and any instructions provided.
                 """)
 
         try:
@@ -1097,29 +1050,24 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             reserved = self.reserved_value
             ufun_str = str(self.ufun)
 
-            parts = ["## Your Utility Function"]
-            parts.append("")
-            parts.append(
-                "You have a utility function that evaluates outcomes. "
-                "Higher utility values are better for you."
-            )
-            parts.append("")
-            parts.append(f"**Description**: {ufun_str}")
-            parts.append("")
-            parts.append(f"**Reserved Value** (utility if no agreement): {reserved}")
-            parts.append("")
-            parts.append("**Full specification**:")
-            parts.append(
-                f"```json\n{json.dumps(ufun_dict, indent=2, default=str)}\n```"
-            )
-
+            parts = [
+                "## Your Utility Function",
+                "",
+                "Higher utility is better for you.",
+                "",
+                f"Your utility function is {ufun_str}.",
+                f"Your reserved value (utility of no agreement) is {reserved}.",
+                "",
+                "Full specification follows.",
+                f"```json\n{json.dumps(ufun_dict, indent=2, default=str)}\n```",
+            ]
             return "\n".join(parts)
         except Exception:
             return _dedent(f"""
                 ## Your Utility Function
 
-                You have a utility function: {self.ufun}
-                Reserved value (utility if no agreement): {self.reserved_value}
+                Your utility function is {self.ufun}.
+                Your reserved value is {self.reserved_value}.
                 """)
 
     def format_partner_ufun(self, state: SAOState) -> str:
@@ -1132,8 +1080,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             return _dedent("""
                 ## Partner's Utility Function
 
-                You do NOT know your partner's utility function. You must infer their
-                preferences from their offers and behavior during the negotiation.
+                Unknown. Infer their preferences from their offers.
                 """)
 
         try:
@@ -1142,29 +1089,24 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             reserved = getattr(partner_ufun, "reserved_value", None)
             ufun_str = str(partner_ufun)
 
-            parts = ["## Partner's Utility Function (Known)"]
-            parts.append("")
-            parts.append(
-                "You know your partner's utility function. Use this information "
-                "strategically to find mutually beneficial outcomes."
-            )
-            parts.append("")
-            parts.append(f"**Description**: {ufun_str}")
+            parts = [
+                "## Partner's Utility Function (Known)",
+                "",
+                f"Partner's utility function is {ufun_str}.",
+            ]
             if reserved is not None:
-                parts.append("")
-                parts.append(f"**Their Reserved Value**: {reserved}")
-            parts.append("")
-            parts.append("**Full specification**:")
-            parts.append(
-                f"```json\n{json.dumps(ufun_dict, indent=2, default=str)}\n```"
-            )
-
+                parts.append(f"Partner's reserved value is {reserved}.")
+            parts += [
+                "",
+                "Full specification follows.",
+                f"```json\n{json.dumps(ufun_dict, indent=2, default=str)}\n```",
+            ]
             return "\n".join(parts)
         except Exception:
             return _dedent(f"""
                 ## Partner's Utility Function (Known)
 
-                Your partner's utility function: {partner_ufun}
+                Partner utility function: {partner_ufun}
                 """)
 
     def format_nmi_info(self) -> str:
@@ -1172,56 +1114,55 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         if self.nmi is None:
             return ""
 
-        parts = ["## Negotiation Mechanism Information"]
-        parts.append("")
+        parts = ["## Mechanism", ""]
 
         n_steps = self.nmi.n_steps
-        if n_steps is not None:
-            parts.append(f"- **Maximum steps**: {n_steps}")
-        else:
-            parts.append("- **Maximum steps**: Unlimited")
+        parts.append(
+            f"    Max steps is {n_steps if n_steps is not None else 'unlimited'}."
+        )
 
         time_limit = self.nmi.time_limit
-        if time_limit is not None:
-            parts.append(f"- **Time limit**: {time_limit:.2f} seconds")
-        else:
-            parts.append("- **Time limit**: Unlimited")
+        parts.append(
+            "    Time limit is "
+            + (f"{time_limit:.2f}s." if time_limit is not None else "unlimited.")
+        )
 
         n_outcomes = self.nmi.n_outcomes
         if n_outcomes is not None:
-            parts.append(f"- **Total possible outcomes**: {n_outcomes}")
+            parts.append(f"    Total outcomes is {n_outcomes}.")
 
         n_negotiators = self.nmi.n_negotiators
         if n_negotiators is not None:
-            parts.append(f"- **Number of negotiators**: {n_negotiators}")
+            parts.append(f"    Number of negotiators is {n_negotiators}.")
 
         if hasattr(self.nmi, "dynamic_entry") and self.nmi.dynamic_entry is not None:
-            parts.append(f"- **Dynamic entry allowed**: {self.nmi.dynamic_entry}")
+            parts.append(f"    Dynamic entry is {self.nmi.dynamic_entry}.")
 
         if hasattr(self.nmi, "annotation") and self.nmi.annotation:
-            parts.append(f"- **Mechanism annotation**: {self.nmi.annotation}")
+            parts.append(f"    Annotation is {self.nmi.annotation}.")
 
         parts.append("")
         return "\n".join(parts)
 
     def format_state(self, state: SAOState, offer: Outcome | None = None) -> str:
         """Format the complete SAOState for the LLM."""
-        parts = ["## Current State"]
-        parts.append("")
+        parts = ["## Current State", ""]
 
-        parts.append(f"- **Step**: {state.step}")
-        parts.append(f"- **Relative time**: {state.relative_time:.2%}")
+        parts.append(f"    Step is {state.step}.")
+        parts.append(f"    Relative time is {state.relative_time:.2%}.")
 
         display_offer = offer if offer is not None else state.current_offer
         if display_offer is not None:
             offer_str = self._format_outcome(display_offer)
-            parts.append(f"- **Current offer on table**: {offer_str}")
+            parts.append(f"    Current offer is {offer_str}.")
             if state.current_proposer:
-                parts.append(f"- **Current proposer**: {state.current_proposer}")
+                parts.append(f"    Proposer is {state.current_proposer}.")
 
             if self.ufun is not None:
                 utility = self.ufun(display_offer)
-                parts.append(f"- **Your utility for current offer**: {utility:.4f}")
+                parts.append(
+                    f"    Your utility for the current offer is {utility:.4f}."
+                )
 
             partner_ufun = (
                 self.private_info.get("opponent_ufun") if self.private_info else None
@@ -1230,34 +1171,34 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
                 try:
                     partner_utility = partner_ufun(display_offer)
                     parts.append(
-                        f"- **Partner's utility for current offer**: "
-                        f"{partner_utility:.4f}"
+                        "    Partner utility for the current offer is "
+                        f"{partner_utility:.4f}."
                     )
                 except Exception:
                     pass
         else:
-            parts.append("- **Current offer on table**: None")
+            parts.append("    No current offer is on the table.")
 
-        parts.append(f"- **Number of acceptances**: {state.n_acceptances}")
-        parts.append(f"- **Negotiation running**: {state.running}")
+        parts.append(f"    Number of acceptances is {state.n_acceptances}.")
+        parts.append(f"    Running is {state.running}.")
 
         if state.broken:
-            parts.append("- **Status**: BROKEN (negotiation ended abnormally)")
+            parts.append("    Status is BROKEN.")
         if state.timedout:
-            parts.append("- **Status**: TIMED OUT")
+            parts.append("    Status is TIMED OUT.")
         if state.agreement is not None:
             agreement_str = self._format_outcome(state.agreement)
-            parts.append(f"- **Agreement reached**: {agreement_str}")
+            parts.append(f"    Agreement is {agreement_str}.")
 
         if hasattr(state, "new_offers") and state.new_offers:
             parts.append("")
-            parts.append("**Recent offers this step**:")
+            parts.append("Recent offers this step:")
             for proposer, prop_offer in state.new_offers:
                 if prop_offer is not None:
                     offer_str = self._format_outcome(prop_offer)
-                    parts.append(f"  - {proposer}: {offer_str}")
+                    parts.append(f"        {proposer} offered {offer_str}.")
                 else:
-                    parts.append(f"  - {proposer}: None")
+                    parts.append(f"        {proposer} offered nothing.")
 
         parts.append("")
         return "\n".join(parts)

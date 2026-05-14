@@ -20,7 +20,7 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 
-from negmas_llm.common import DEFAULT_MODELS
+from negmas_llm.common import DEFAULT_MODELS, apply_max_tokens
 from negmas_llm.tags import process_prompt
 
 DEFAULT_OLLAMA_MODEL = DEFAULT_MODELS.get("ollama", "qwen3:4b-instruct")
@@ -312,26 +312,17 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
             return self._custom_system_prompt
 
         return _dedent("""
-            You are assisting a negotiator by generating persuasive text to
-            accompany offers.
+            You generate concise, persuasive text to accompany negotiation actions.
 
-            Your role is to:
-            1. Generate natural, persuasive messages that explain or justify the offer
-            2. Consider any messages received from the other party
-            3. Build rapport while advancing the negotiation
-            4. Keep messages concise but impactful
+            Guidelines:
+                1. Justify the offer naturally.
+                2. Acknowledge any message received from the other party.
+                3. Keep it brief (1-3 sentences) and professional.
 
-            You will receive:
-            - The offer being made (or acceptance/rejection decision)
-            - Any text received from the other party in their last offer
-            - Context about the negotiation state
-
-            Respond with ONLY a JSON object:
+            Respond with ONLY this JSON:
             {
-                "text": "Your message to accompany the offer"
+                "text": "your message"
             }
-
-            Keep messages brief (1-3 sentences) and professional.
             """)
 
     def _build_user_message(
@@ -352,43 +343,51 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         Returns:
             The user message string.
         """
-        parts = [f"Negotiation round {state.step} (time: {state.relative_time:.1%})"]
-        parts.append("")
+        parts = [
+            f"This is round {state.step} (relative time is {state.relative_time:.1%}).",
+            "",
+        ]
 
         if received_text:
-            parts.append(f'Message from other party: "{received_text}"')
+            parts.append(f'The other party said: "{received_text}"')
             parts.append("")
 
         if action == "propose":
-            parts.append(f"You are making an offer: {outcome}")
-            parts.append("Generate a message to accompany this offer.")
+            parts.append(f"You are making the offer {outcome}.")
+            parts.append("Write a brief message for this offer.")
         elif action == "accept":
-            parts.append(f"You are ACCEPTING the offer: {state.current_offer}")
-            parts.append("Generate a brief acceptance message.")
+            parts.append(f"You are ACCEPTING the offer {state.current_offer}.")
+            parts.append("Write a brief acceptance message.")
         elif action == "reject":
             if outcome:
                 parts.append(
-                    f"You are REJECTING the current offer and "
-                    f"counter-proposing: {outcome}"
+                    "You are REJECTING the current offer and "
+                    f"counter-proposing {outcome}."
                 )
-                parts.append("Generate a message explaining your counter-offer.")
+                parts.append("Write a brief message explaining the counter-offer.")
             else:
                 parts.append("You are REJECTING the current offer.")
-                parts.append("Generate a brief rejection message.")
+                parts.append("Write a brief rejection message.")
         elif action == "end":
             parts.append("You are ENDING the negotiation without agreement.")
-            parts.append("Generate a brief closing message.")
+            parts.append("Write a brief closing message.")
 
         return "\n".join(parts)
 
     def _call_llm(
-        self, messages: list[dict[str, str]], state: SAOState | None = None
+        self,
+        messages: list[dict[str, str]],
+        state: SAOState | None = None,
+        max_tokens: int | None = None,
     ) -> str:
         """Call the LLM and get a response.
 
         Args:
             messages: The conversation messages.
             state: The current negotiation state (for tag processing).
+            max_tokens: Per-call override for the output token cap. If None,
+                uses ``self.max_tokens``. A provider-specific alias in
+                ``self.llm_kwargs`` always takes precedence.
 
         Returns:
             The LLM response text.
@@ -403,9 +402,14 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
             "model": self.get_model_string(),
             "messages": processed_messages,
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
             **self.llm_kwargs,
         }
+        apply_max_tokens(
+            kwargs,
+            self.provider,
+            self.model,
+            max_tokens if max_tokens is not None else self.max_tokens,
+        )
 
         if self.api_key:
             kwargs["api_key"] = self.api_key

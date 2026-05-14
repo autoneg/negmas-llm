@@ -22,6 +22,7 @@ from negmas.gb.components import AcceptancePolicy, GBComponent, OfferingPolicy
 from negmas.inout import serialize
 from negmas.outcomes import Outcome
 
+from negmas_llm.common import apply_max_tokens
 from negmas_llm.tags import process_prompt
 
 if TYPE_CHECKING:
@@ -41,9 +42,7 @@ def _dedent(text: str) -> str:
 # =============================================================================
 
 DEFAULT_ACCEPTANCE_SYSTEM_PROMPT = _dedent("""
-    You are an acceptance policy in an automated negotiation.
-    Your role is to decide whether to ACCEPT, REJECT, or END the negotiation
-    based on offers received.
+    You are an acceptance policy. Decide ACCEPT / REJECT / END for offers.
 
     {{outcome-space}}
     {{utility-function}}
@@ -52,27 +51,21 @@ DEFAULT_ACCEPTANCE_SYSTEM_PROMPT = _dedent("""
 DEFAULT_ACCEPTANCE_RESPONSE_INSTRUCTIONS = _dedent("""
     ## Response Format
 
-    IMPORTANT: Your response MUST be valid JSON in the following format:
+    Respond with JSON only:
     {
         "decision": "accept" | "reject" | "end",
-        "reasoning": "brief explanation of your decision"
+        "reasoning": "brief explanation"
     }
 
-    Where:
-    - "decision": Your decision:
-      - "accept": Accept the current offer
-      - "reject": Reject the offer (a counter-offer will be generated
-        separately)
-      - "end": End the negotiation without agreement
-    - "reasoning": Brief explanation of why you made this decision
-
-    Always respond with ONLY the JSON object, no additional text.
+    decision values:
+        accept: accept current offer
+        reject: reject offer (counter-offer generated separately)
+        end: end negotiation without agreement
     """)
 
 DEFAULT_OFFERING_SYSTEM_PROMPT = _dedent("""
-    You are an offering policy in an automated negotiation.
-    Your role is to generate strategic offers that advance your interests
-    while seeking mutually acceptable agreements.
+    You are an offering policy. Generate strategic offers that advance your
+    interests while seeking acceptable agreements.
 
     {{outcome-space}}
     {{utility-function}}
@@ -81,46 +74,29 @@ DEFAULT_OFFERING_SYSTEM_PROMPT = _dedent("""
 DEFAULT_OFFERING_RESPONSE_INSTRUCTIONS = _dedent("""
     ## Response Format
 
-    IMPORTANT: Your response MUST be valid JSON in the following format:
+    Respond with JSON only:
     {
         "outcome": [value1, value2, ...],
-        "text": "optional message to accompany the offer",
-        "reasoning": "brief explanation of why you chose this offer"
+        "text": "optional message to opponent",
+        "reasoning": "brief explanation"
     }
 
-    Where:
-    - "outcome": Your proposed offer as a list of values matching the
-      issue order
-    - "text": Optional text message to send with the offer
-    - "reasoning": Brief explanation of your strategy
-
-    Always respond with ONLY the JSON object, no additional text.
+    outcome: list of values in issue order.
     """)
 
 DEFAULT_SUPPORTER_SYSTEM_PROMPT = _dedent("""
-    You are a skilled negotiation communicator. Your role is to generate
-    persuasive, professional text to accompany negotiation actions.
-
-    Your text should:
-    - Be concise but compelling
-    - Support the action being taken
-    - Maintain a professional tone
-    - Build rapport while advancing your position
-
-    Respond with ONLY the text message, no JSON or formatting.
+    You generate concise, professional text for negotiation actions.
+    Be brief, support the action, maintain a professional tone.
+    Respond with ONLY the text message (no JSON, no formatting).
     """)
 
 DEFAULT_VALIDATOR_PROMPT = _dedent("""
-    You are a negotiation consistency validator. Your role is to check if
-    text messages are consistent with negotiation actions.
+    You check consistency between negotiation text and actions.
 
-    Analyze whether the text accurately represents the action being taken.
-    Report any inconsistencies found.
-
-    Respond in JSON format:
+    Respond with JSON only:
     {
         "consistent": true | false,
-        "issues": ["list of inconsistencies if any"],
+        "issues": ["..."],
         "suggested_text": "corrected text if inconsistent",
         "suggested_action": "accept" | "reject" | "end"
     }
@@ -195,6 +171,7 @@ class LLMComponentMixin(ABC):
         messages: list[dict[str, str]],
         negotiator: Negotiator | None = None,
         state: GBState | None = None,
+        max_tokens: int | None = None,
     ) -> str:
         """Call the LLM and get a response.
 
@@ -204,6 +181,9 @@ class LLMComponentMixin(ABC):
             messages: The conversation messages.
             negotiator: The negotiator instance (for tag processing).
             state: The current negotiation state (for tag processing).
+            max_tokens: Per-call override for the output token cap. If None,
+                uses ``self.max_tokens``. A provider-specific alias in
+                ``self.llm_kwargs`` always takes precedence.
 
         Returns:
             The LLM response text.
@@ -218,9 +198,14 @@ class LLMComponentMixin(ABC):
             "model": self.get_model_string(),
             "messages": processed_messages,
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
             **self.llm_kwargs,
         }
+        apply_max_tokens(
+            kwargs,
+            self.provider,
+            self.model,
+            max_tokens if max_tokens is not None else self.max_tokens,
+        )
 
         if self.api_key:
             kwargs["api_key"] = self.api_key
@@ -263,17 +248,13 @@ class LLMComponentMixin(ABC):
             os_dict = serialize(outcome_space)
             os_dict.pop("__python_class__", None)
 
-            parts = ["## Outcome Space"]
-            parts.append("")
-            parts.append(
-                "The negotiation outcome space defines the possible agreements:"
-            )
-            parts.append("")
-            parts.append(f"```json\n{json.dumps(os_dict, indent=2, default=str)}\n```")
-            parts.append("")
-            parts.append(
-                "Each outcome is a tuple of values, one for each issue/dimension."
-            )
+            parts = [
+                "## Outcome Space",
+                "",
+                f"```json\n{json.dumps(os_dict, indent=2, default=str)}\n```",
+                "",
+                "Each outcome is a tuple of values, one per issue.",
+            ]
             return "\n".join(parts)
         except Exception:
             return f"## Outcome Space\n\n{outcome_space}\n"
@@ -283,8 +264,8 @@ class LLMComponentMixin(ABC):
         if negotiator is None or negotiator.ufun is None:
             return """## Your Utility Function
 
-You do NOT have a utility function. You must negotiate based on general
-principles and any instructions provided.
+You do NOT have a utility function. Negotiate using general principles
+and any instructions provided.
 """
 
         try:
@@ -293,27 +274,23 @@ principles and any instructions provided.
             reserved = negotiator.reserved_value
             ufun_str = str(negotiator.ufun)
 
-            parts = ["## Your Utility Function"]
-            parts.append("")
-            parts.append(
-                "You have a utility function that evaluates outcomes. "
-                "Higher utility values are better for you."
-            )
-            parts.append("")
-            parts.append(f"**Description**: {ufun_str}")
-            parts.append("")
-            parts.append(f"**Reserved Value** (utility if no agreement): {reserved}")
-            parts.append("")
-            parts.append("**Full specification**:")
-            parts.append(
-                f"```json\n{json.dumps(ufun_dict, indent=2, default=str)}\n```"
-            )
+            parts = [
+                "## Your Utility Function",
+                "",
+                "Higher utility is better for you.",
+                "",
+                f"Your utility function is {ufun_str}.",
+                f"Your reserved value (utility of no agreement) is {reserved}.",
+                "",
+                "Full specification follows.",
+                f"```json\n{json.dumps(ufun_dict, indent=2, default=str)}\n```",
+            ]
             return "\n".join(parts)
         except Exception:
             return f"""## Your Utility Function
 
-You have a utility function: {negotiator.ufun}
-Reserved value (utility if no agreement): {negotiator.reserved_value}
+Your utility function is {negotiator.ufun}.
+Your reserved value is {negotiator.reserved_value}.
 """
 
     def format_state(
@@ -323,26 +300,27 @@ Reserved value (utility if no agreement): {negotiator.reserved_value}
         negotiator: Negotiator | None,
     ) -> str:
         """Format the negotiation state for the LLM."""
-        parts = ["## Current State"]
-        parts.append("")
-        parts.append(f"- **Step**: {state.step}")
-        parts.append(f"- **Relative time**: {state.relative_time:.2%}")
+        parts = ["## Current State", ""]
+        parts.append(f"    Step is {state.step}.")
+        parts.append(f"    Relative time is {state.relative_time:.2%}.")
 
         if offer is not None:
             offer_str = self._format_outcome(offer, negotiator)
-            parts.append(f"- **Current offer on table**: {offer_str}")
+            parts.append(f"    Current offer is {offer_str}.")
 
             if negotiator is not None and negotiator.ufun is not None:
                 utility = negotiator.ufun(offer)
-                parts.append(f"- **Your utility for current offer**: {utility:.4f}")
+                parts.append(
+                    f"    Your utility for the current offer is {utility:.4f}."
+                )
         else:
-            parts.append("- **Current offer on table**: None")
+            parts.append("    No current offer is on the table.")
 
-        parts.append(f"- **Negotiation running**: {state.running}")
+        parts.append(f"    Running is {state.running}.")
         if state.broken:
-            parts.append("- **Status**: BROKEN")
+            parts.append("    Status is BROKEN.")
         if state.timedout:
-            parts.append("- **Status**: TIMED OUT")
+            parts.append("    Status is TIMED OUT.")
 
         parts.append("")
         return "\n".join(parts)
@@ -440,20 +418,18 @@ class LLMAcceptancePolicy(AcceptancePolicy, LLMComponentMixin):
         Returns:
             The user message string.
         """
-        parts = [f"# Negotiation Round {state.step}"]
-        parts.append("")
+        parts = [f"# Round {state.step}", ""]
         parts.append(self.format_state(state, offer, self.negotiator))
 
         if offer is not None:
             parts.append(
-                f"You received an offer from **{source or 'opponent'}**. "
-                "Should you accept, reject, or end the negotiation?"
+                f"Offer from {source or 'opponent'}. Accept, reject, or end?"
             )
         else:
-            parts.append("No offer received. Should you continue (reject) or end?")
+            parts.append("No offer received. Continue (reject) or end?")
 
         parts.append("")
-        parts.append("Respond with your decision in JSON format.")
+        parts.append("Respond with JSON.")
         return "\n".join(parts)
 
     def _parse_response(self, response_text: str) -> ResponseType:
@@ -589,20 +565,19 @@ class LLMOfferingPolicy(OfferingPolicy, LLMComponentMixin):
         Returns:
             The user message string.
         """
-        parts = [f"# Negotiation Round {state.step}"]
-        parts.append("")
+        parts = [f"# Round {state.step}", ""]
         parts.append(self.format_state(state, None, self.negotiator))
 
         if state.step == 0:
-            parts.append("This is the opening round. Make your first offer.")
+            parts.append("Opening round. Make your first offer.")
         else:
-            parts.append("Generate your next offer based on the negotiation progress.")
+            parts.append("Generate your next offer.")
 
         if dest:
-            parts.append(f"Your offer will be sent to: {dest}")
+            parts.append(f"Recipient: {dest}")
 
         parts.append("")
-        parts.append("Respond with your offer in JSON format.")
+        parts.append("Respond with JSON.")
         return "\n".join(parts)
 
     def _parse_response(self, response_text: str) -> tuple[Outcome | None, str | None]:
@@ -841,19 +816,19 @@ class LLMNegotiationSupporter(GBComponent, LLMComponentMixin):
         if self.negotiator is not None and self.negotiator.ufun is not None:
             utility = self.negotiator.ufun(offer)
 
-        user_message = f"""Generate a brief, persuasive message to accompany this offer:
-
-Offer: {offer_str}
-Round: {state.step}
-Relative time: {state.relative_time:.1%}
-"""
+        user_message = (
+            "Generate a brief, persuasive message for this offer.\n\n"
+            f"The offer is {offer_str}.\n"
+            f"The round is {state.step}.\n"
+            f"Relative time is {state.relative_time:.1%}.\n"
+        )
         if utility is not None:
-            user_message += f"Your utility: {utility:.3f}\n"
+            user_message += f"Your utility for this offer is {utility:.3f}.\n"
 
         if state.step == 0:
-            user_message += "\nThis is the opening offer."
+            user_message += "\nOpening offer."
         else:
-            user_message += "\nThis is a counter-offer in an ongoing negotiation."
+            user_message += "\nCounter-offer."
 
         messages = [
             {"role": "system", "content": self.build_system_prompt()},
@@ -891,19 +866,19 @@ Relative time: {state.relative_time:.1%}
 
         offer_str = self._format_outcome(offer, self.negotiator) if offer else "None"
 
-        user_message = f"""Generate a brief message to accompany this response:
-
-Response: {response_name}
-Offer being responded to: {offer_str}
-Round: {state.step}
-"""
+        user_message = (
+            "Generate a brief message for this response.\n\n"
+            f"The response is {response_name}.\n"
+            f"The offer is {offer_str}.\n"
+            f"The round is {state.step}.\n"
+        )
 
         if response == ResponseType.ACCEPT_OFFER:
-            user_message += "\nExpress agreement and finalize positively."
+            user_message += "\nExpress agreement positively."
         elif response == ResponseType.REJECT_OFFER:
             user_message += "\nExplain the rejection constructively."
         else:
-            user_message += "\nExplain why you're ending the negotiation."
+            user_message += "\nExplain why you're ending."
 
         messages = [
             {"role": "system", "content": self.build_system_prompt()},
@@ -1031,13 +1006,13 @@ class LLMValidator(GBComponent, LLMComponentMixin):
         response_name = response_names.get(response, "REJECT")
         offer_str = self._format_outcome(offer, self.negotiator) if offer else "None"
 
-        user_message = f"""Validate this negotiation response:
-
-Action: {response_name}
-Offer: {offer_str}
-Text message: "{text}"
-
-Is the text consistent with the action?"""
+        user_message = (
+            "Validate this negotiation response.\n\n"
+            f"The action is {response_name}.\n"
+            f"The offer is {offer_str}.\n"
+            f'The text is: "{text}"\n\n'
+            "Is the text consistent with the action?"
+        )
 
         messages = [
             {"role": "system", "content": self.build_validation_prompt()},
@@ -1076,12 +1051,12 @@ Is the text consistent with the action?"""
 
         offer_str = self._format_outcome(offer, self.negotiator)
 
-        user_message = f"""Validate this negotiation offer:
-
-Offer: {offer_str}
-Text message: "{text}"
-
-Is the text consistent with the offer being made?"""
+        user_message = (
+            "Validate this negotiation offer.\n\n"
+            f"The offer is {offer_str}.\n"
+            f'The text is: "{text}"\n\n'
+            "Is the text consistent with the offer?"
+        )
 
         messages = [
             {"role": "system", "content": self.build_validation_prompt()},
@@ -1111,13 +1086,12 @@ Is the text consistent with the offer being made?"""
         Returns:
             Corrected text.
         """
-        user_message = f"""The following text is inconsistent with the action.
-Generate corrected text that matches the action.
-
-Original text: "{text}"
-Action: {action_description}
-
-Respond with ONLY the corrected text, no formatting."""
+        user_message = (
+            "Rewrite the text to match the action. "
+            "Reply with ONLY the corrected text.\n\n"
+            f'The original text is: "{text}"\n'
+            f"The action is {action_description}."
+        )
 
         messages = [
             {
