@@ -58,6 +58,10 @@ line-length = 88
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+# E501 (line-too-long) is not auto-fixable by ruff and should not block commits.
+# `ruff format` already handles most cases; the remainder is usually URLs,
+# error messages, or expressions where wrapping hurts readability.
+ignore = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

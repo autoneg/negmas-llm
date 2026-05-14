@@ -12,8 +12,8 @@ from negmas_llm import OpenAINegotiator
 
 # Step 1: Define the negotiation issues
 issues = [
-    make_issue("price", (0, 100)),      # Price from 0 to 100
-    make_issue("quantity", (1, 10)),    # Quantity from 1 to 10
+    make_issue("price", (0, 100)),  # Price from 0 to 100
+    make_issue("quantity", (1, 10)),  # Quantity from 1 to 10
 ]
 
 # Step 2: Create utility functions
@@ -38,7 +38,7 @@ seller = OpenAINegotiator(
 
 buyer = OpenAINegotiator(
     model="gpt-4o",
-    name="buyer", 
+    name="buyer",
     ufun=buyer_ufun,
 )
 
@@ -91,9 +91,9 @@ negotiator = OpenAINegotiator(
     model="gpt-4o",
     name="negotiator",
     ufun=my_ufun,
-    temperature=0.5,      # Lower = more deterministic
-    max_tokens=2048,      # Response length limit
-    llm_kwargs={          # Additional litellm parameters
+    temperature=0.5,  # Lower = more deterministic
+    max_tokens=2048,  # Response length limit
+    llm_kwargs={  # Additional litellm parameters
         "top_p": 0.9,
     },
 )

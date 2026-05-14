@@ -418,9 +418,7 @@ class LLMAcceptancePolicy(AcceptancePolicy, LLMComponentMixin):
         parts.append(self.format_state(state, offer, self.negotiator))
 
         if offer is not None:
-            parts.append(
-                f"Offer from {source or 'opponent'}. Accept, reject, or end?"
-            )
+            parts.append(f"Offer from {source or 'opponent'}. Accept, reject, or end?")
         else:
             parts.append("No offer received. Continue (reject) or end?")
 
@@ -637,7 +635,8 @@ class LLMOfferingPolicy(OfferingPolicy, LLMComponentMixin):
                     if not nmi.outcome_space.is_valid(outcome):  # type: ignore[attr-defined]
                         msg = (
                             f"LLM returned invalid outcome: {outcome}. "
-                            "Not valid in outcome space. Setting to None (information-only message)."
+                            "Not valid in outcome space. "
+                            "Setting to None (information-only message)."
                         )
                         if self.raise_on_parsing_error:
                             raise ValueError(msg)

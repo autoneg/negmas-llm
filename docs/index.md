@@ -35,7 +35,7 @@ seller = OpenAINegotiator(
     ufun=LinearAdditiveUtilityFunction(weights=[0.6, 0.4], issues=issues),
 )
 buyer = OpenAINegotiator(
-    model="gpt-4o", 
+    model="gpt-4o",
     name="buyer",
     ufun=LinearAdditiveUtilityFunction(weights=[-0.6, 0.4], issues=issues),
 )

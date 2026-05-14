@@ -84,10 +84,7 @@ negotiator = OllamaNegotiator(model="llama3.2")
 ```python
 from negmas_llm import VLLMNegotiator
 
-negotiator = VLLMNegotiator(
-    model="your-model",
-    api_base="http://localhost:8000/v1"
-)
+negotiator = VLLMNegotiator(model="your-model", api_base="http://localhost:8000/v1")
 ```
 
 ### Local Models with LM Studio

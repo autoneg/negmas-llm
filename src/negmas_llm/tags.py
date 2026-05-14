@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from negmas.inout import serialize
@@ -46,7 +46,7 @@ __all__ = [
 ]
 
 
-class Tag(str, Enum):
+class Tag(StrEnum):
     """Supported tag identifiers.
 
     Tags are used to inject dynamic content into prompts based on
@@ -475,7 +475,7 @@ Useful for computing utilities of specific offers or nested tags.
         }
 
 
-class TagFormat(str, Enum):
+class TagFormat(StrEnum):
     """Output format for tag values."""
 
     TEXT = "text"
@@ -1091,8 +1091,7 @@ def _handle_utility_function(ctx: TagContext) -> str:
             # Fallback for other utility function types
             reserved = ctx.negotiator.reserved_value
             return (
-                f"Your utility function is {ufun}.\n"
-                f"Your reserved value is {reserved}."
+                f"Your utility function is {ufun}.\nYour reserved value is {reserved}."
             )
 
 

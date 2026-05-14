@@ -972,7 +972,8 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
                 # If not valid, return None to reject this outcome
                 msg = (
                     f"LLM returned invalid outcome: {outcome}. "
-                    "Not valid in outcome space. Setting to None (information-only message)."
+                    "Not valid in outcome space. "
+                    "Setting to None (information-only message)."
                 )
                 if self.raise_on_parsing_error:
                     raise ValueError(msg)
