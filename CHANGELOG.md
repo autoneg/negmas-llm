@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres (loosely) to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.3] - 2026-05-14
 
 ### Added
 
@@ -69,6 +69,9 @@ and this project adheres (loosely) to [Semantic Versioning](https://semver.org/s
   device-flow OAuth (and fail after 3 attempts) when no cached token
   exists locally — the tests now skip cleanly unless credentials are
   available or the new opt-in env var is set
+- Handle dict-shaped outcomes returned by some LLM responses in
+  `components.py` and `negotiator.py` (normalised to issue-order tuples;
+  invalid values surface a warning unless `raise_on_parsing_error`)
 
 ## [0.4.2] - 2026-03-15
 
