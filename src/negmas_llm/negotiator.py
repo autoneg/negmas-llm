@@ -26,7 +26,12 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 
-from negmas_llm.common import DEFAULT_MODELS, apply_max_tokens, litellm_model_string
+from negmas_llm.common import (
+    DEFAULT_MODELS,
+    apply_max_tokens,
+    litellm_model_string,
+    resolve_ollama_api_base,
+)
 from negmas_llm.tags import process_prompt as _process_prompt
 
 if TYPE_CHECKING:
@@ -1477,7 +1482,11 @@ class OllamaNegotiator(LLMNegotiator):
 
     Args:
         model: Ollama model name (default: DEFAULT_MODELS["ollama"]).
-        api_base: Ollama server URL (default: "http://localhost:11434").
+        api_base: Ollama server URL. When ``None`` (the default), the URL
+            is resolved from the ``OLLAMA_HOST`` env var — the same
+            variable ``ollama serve`` reads — falling back to
+            ``http://localhost:11434``. Pass an explicit string to pin a
+            specific endpoint regardless of the environment.
         **kwargs: Additional arguments passed to LLMNegotiator.
     """
 
@@ -1485,9 +1494,11 @@ class OllamaNegotiator(LLMNegotiator):
         self,
         model: str = DEFAULT_MODELS.get("ollama", "qwen3:4b-instruct"),
         *,
-        api_base: str = "http://localhost:11434",
+        api_base: str | None = None,
         **kwargs: Any,
     ) -> None:
+        if api_base is None:
+            api_base = resolve_ollama_api_base()
         super().__init__(
             provider="ollama",
             model=model,

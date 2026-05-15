@@ -27,6 +27,29 @@ def _get_default_model(provider: str, fallback: str) -> str:
     return fallback
 
 
+def resolve_ollama_api_base(default: str = "http://localhost:11434") -> str:
+    """Resolve the Ollama API base URL from the ``OLLAMA_HOST`` env var.
+
+    ``ollama serve`` itself reads ``OLLAMA_HOST`` to choose where to listen
+    (accepts ``host:port``, bare ``host``, or a full URL), so deriving the
+    client URL from the same variable keeps client and server in sync.
+
+    Args:
+        default: URL to return when ``OLLAMA_HOST`` is empty or unset.
+
+    Returns:
+        A full ``http(s)://host:port`` URL.
+    """
+    host = os.environ.get("OLLAMA_HOST", "").strip()
+    if not host:
+        return default
+    if "://" in host:
+        return host
+    if ":" not in host:
+        host = f"{host}:11434"
+    return f"http://{host}"
+
+
 DEFAULT_MODELS: dict[str, str] = {
     "ollama": _get_default_model("ollama", "qwen3:4b-instruct"),
     "openai": _get_default_model("openai", "gpt-4o-mini"),
