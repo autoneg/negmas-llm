@@ -49,6 +49,7 @@ from negmas_llm.negotiator import (
     AWSBedrockNegotiator,
     AzureOpenAINegotiator,
     CohereNegotiator,
+    DashScopeNegotiator,
     DeepSeekNegotiator,
     GeminiNegotiator,
     GroqNegotiator,
@@ -168,6 +169,12 @@ negotiator_registry.register(
     DeepSeekNegotiator,
     source=_NEGOTIATOR_SOURCE,
     tags={"llm", "sao", "deepseek", "cloud"},
+)
+
+negotiator_registry.register(
+    DashScopeNegotiator,
+    source=_NEGOTIATOR_SOURCE,
+    tags={"llm", "sao", "dashscope", "qwen", "cloud"},
 )
 
 negotiator_registry.register(
@@ -511,6 +518,7 @@ __all__ = [
     "AWSBedrockNegotiator",
     "OpenRouterNegotiator",
     "DeepSeekNegotiator",
+    "DashScopeNegotiator",
     "HuggingFaceNegotiator",
     # Local/Open-source negotiators
     "OllamaNegotiator",

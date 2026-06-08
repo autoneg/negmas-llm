@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres (loosely) to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `OllamaNegotiator` now derives its default `api_base` from the `OLLAMA_HOST`
+  environment variable (host:port, bare host, or full URL), matching how
+  `ollama serve` chooses its listen address. Explicit `api_base` arguments
+  still take precedence; with no env var set, behavior is unchanged
+  (`http://localhost:11434`).
+
+### Added
+
+- `negmas_llm.common.resolve_ollama_api_base()` helper exposing the same
+  `OLLAMA_HOST` resolution rule for reuse by downstream code.
+- Ollama Cloud / Turbo support in `OllamaNegotiator`: when an `api_key` is
+  provided (or `OLLAMA_API_KEY` is set) and `api_base` is not pinned, the
+  negotiator routes to `https://ollama.com` instead of a local server.
+- `DashScopeNegotiator` for Alibaba DashScope (Qwen) models, reading
+  `DASHSCOPE_API_KEY` from the environment.
+
 ## [0.4.3] - 2026-05-14
 
 ### Added

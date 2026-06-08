@@ -58,6 +58,7 @@ __all__ = [
     "HuggingFaceNegotiator",
     "OpenRouterNegotiator",
     "DeepSeekNegotiator",
+    "DashScopeNegotiator",
 ]
 
 
@@ -1477,16 +1478,29 @@ class GitHubCopilotNegotiator(LLMNegotiator):
 # =============================================================================
 
 
+_OLLAMA_CLOUD_API_BASE = "https://ollama.com"
+
+
 class OllamaNegotiator(LLMNegotiator):
-    """LLM Negotiator using Ollama for local model inference.
+    """LLM Negotiator using Ollama for local or cloud model inference.
+
+    Supports both a local ``ollama serve`` instance and Ollama Cloud /
+    Turbo (``https://ollama.com``). When ``api_key`` is supplied — or the
+    ``OLLAMA_API_KEY`` env var is set — and ``api_base`` is not pinned,
+    the Cloud endpoint is used; otherwise the local URL is resolved from
+    ``OLLAMA_HOST``.
 
     Args:
         model: Ollama model name (default: DEFAULT_MODELS["ollama"]).
         api_base: Ollama server URL. When ``None`` (the default), the URL
-            is resolved from the ``OLLAMA_HOST`` env var — the same
-            variable ``ollama serve`` reads — falling back to
+            is resolved automatically: ``https://ollama.com`` if an API
+            key is available, else the value of ``OLLAMA_HOST`` (the same
+            variable ``ollama serve`` reads), else
             ``http://localhost:11434``. Pass an explicit string to pin a
             specific endpoint regardless of the environment.
+        api_key: API key for Ollama Cloud / Turbo. Defaults to the
+            ``OLLAMA_API_KEY`` env var. Leave ``None`` for unauthenticated
+            local deployments.
         **kwargs: Additional arguments passed to LLMNegotiator.
     """
 
@@ -1495,14 +1509,20 @@ class OllamaNegotiator(LLMNegotiator):
         model: str = DEFAULT_MODELS.get("ollama", "qwen3:4b-instruct"),
         *,
         api_base: str | None = None,
+        api_key: str | None = None,
         **kwargs: Any,
     ) -> None:
+        if api_key is None:
+            api_key = os.environ.get("OLLAMA_API_KEY") or None
         if api_base is None:
-            api_base = resolve_ollama_api_base()
+            api_base = (
+                _OLLAMA_CLOUD_API_BASE if api_key else resolve_ollama_api_base()
+            )
         super().__init__(
             provider="ollama",
             model=model,
             api_base=api_base,
+            api_key=api_key,
             **kwargs,
         )
 
@@ -1647,6 +1667,30 @@ class DeepSeekNegotiator(LLMNegotiator):
     ) -> None:
         super().__init__(
             provider="deepseek",
+            model=model,
+            api_key=api_key,
+            **kwargs,
+        )
+
+
+class DashScopeNegotiator(LLMNegotiator):
+    """LLM Negotiator using Alibaba DashScope (Qwen) models.
+
+    Args:
+        model: DashScope model name (default: "qwen3-4b-instruct").
+        api_key: DashScope API key (uses DASHSCOPE_API_KEY env var if not provided).
+        **kwargs: Additional arguments passed to LLMNegotiator.
+    """
+
+    def __init__(
+        self,
+        model: str = "qwen3-4b-instruct",
+        *,
+        api_key: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            provider="dashscope",
             model=model,
             api_key=api_key,
             **kwargs,
