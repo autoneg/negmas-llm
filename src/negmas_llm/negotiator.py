@@ -1515,9 +1515,7 @@ class OllamaNegotiator(LLMNegotiator):
         if api_key is None:
             api_key = os.environ.get("OLLAMA_API_KEY") or None
         if api_base is None:
-            api_base = (
-                _OLLAMA_CLOUD_API_BASE if api_key else resolve_ollama_api_base()
-            )
+            api_base = _OLLAMA_CLOUD_API_BASE if api_key else resolve_ollama_api_base()
         super().__init__(
             provider="ollama",
             model=model,
