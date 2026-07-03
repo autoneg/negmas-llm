@@ -197,7 +197,9 @@ class TestLLMNegotiatorInitialization:
         )
         assert negotiator.provider == "openai"
         assert negotiator.model == "gpt-4o-mini"
-        assert negotiator.temperature == 0.7  # default
+        # None => resolved to a model-appropriate value at call time
+        assert negotiator.temperature is None
+        assert negotiator.max_tokens is None
         assert negotiator.verbose is False  # default
 
     def test_ollama_initialization(self):
