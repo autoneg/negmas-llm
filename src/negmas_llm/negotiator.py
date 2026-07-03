@@ -29,6 +29,7 @@ from rich.table import Table
 from negmas_llm.common import (
     DEFAULT_MODELS,
     apply_max_tokens,
+    apply_temperature,
     litellm_model_string,
     resolve_ollama_api_base,
 )
@@ -324,8 +325,13 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         model: The model name (e.g., "gpt-4", "claude-3-opus").
         api_key: API key for the provider (if required).
         api_base: Base URL for the API (useful for local deployments).
-        temperature: Sampling temperature for the LLM.
-        max_tokens: Maximum tokens in the LLM response.
+        temperature: Sampling temperature for the LLM. None (default) selects a
+            model-appropriate value (0.7 for most models; omitted entirely for
+            OpenAI reasoning models, which reject non-default temperatures).
+        max_tokens: Maximum tokens in the LLM response. None (default) selects a
+            model-appropriate budget: 1024 for classic instruct models, larger
+            for reasoning/thinking models whose hidden deliberation counts
+            against the same budget (otherwise they can return empty content).
         use_structured_output: If True (default), use structured output/JSON mode
             when the provider supports it. This guarantees valid JSON responses.
             Set to False to disable and rely on prompt-based JSON extraction.
@@ -367,8 +373,8 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 1024,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         timeout: float | int | None = None,
         num_retries: int | None = None,
         use_structured_output: bool = True,
@@ -580,12 +586,13 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         kwargs: dict[str, Any] = {
             "model": self.get_model_string(),
             "messages": messages,
-            "temperature": self.temperature,
             **self.llm_kwargs,
         }
-        # Route the token cap to the correct provider-specific kwarg
-        # (max_tokens / max_completion_tokens / num_predict / ...).
-        # Skipped if the user supplied any alias in llm_kwargs.
+        # Model-dependent parameters: an explicit constructor/per-call value
+        # wins; None resolves a model-appropriate default (larger token budget
+        # for reasoning models, temperature omitted where unsupported). A
+        # provider-specific alias in llm_kwargs takes precedence over both.
+        apply_temperature(kwargs, self.provider, self.model, self.temperature)
         apply_max_tokens(
             kwargs,
             self.provider,

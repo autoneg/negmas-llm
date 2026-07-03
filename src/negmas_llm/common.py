@@ -74,6 +74,145 @@ DEFAULT_MODELS: dict[str, str] = {
 
 
 # =============================================================================
+# Model-dependent parameter defaults
+# =============================================================================
+#
+# Reasoning ("thinking") models generate hidden deliberation tokens before the
+# visible answer, and most providers count them against the SAME output budget
+# as the content. With the historical default of max_tokens=1024, a reasoning
+# model can burn the whole budget thinking and return EMPTY content — the
+# negotiator then sees no offer and no text. Non-reasoning instruct models put
+# all 1024 tokens into visible output, which is why the old default worked for
+# them. The constructors therefore accept ``None`` for the model-dependent
+# parameters and resolve an appropriate value per model here.
+
+# Visible-output budget for classic instruct models (the old fixed default).
+DEFAULT_MAX_TOKENS = 1024
+# Budget for reasoning models: large enough that hidden thinking (typically a
+# few hundred to a few thousand tokens on negotiation-sized prompts) cannot
+# starve the visible JSON response.
+DEFAULT_MAX_TOKENS_REASONING = 8192
+DEFAULT_TEMPERATURE = 0.7
+
+# Model-name prefixes (provider prefix stripped, lowercased) of families that
+# reason/think by default. Matching is deliberately by base-name prefix so tags
+# and size suffixes ("kimi-k2.6", "deepseek-v4-flash", "minimax-m3",
+# "nemotron-3-nano:30b") are covered. Verified empirically on Ollama Cloud
+# 2026-07 (models returning a reasoning/thinking field): deepseek-v4-*,
+# qwen3.5, glm-5.x, kimi-k2.5+, minimax-m2.x/m3, nemotron-3-*, gpt-oss.
+_REASONING_MODEL_PREFIXES: tuple[str, ...] = (
+    # OpenAI
+    "o1",
+    "o3",
+    "o4",
+    "gpt-5",
+    "gpt-oss",
+    # DeepSeek: r-series and v3+ hybrids reason by default
+    "deepseek-r",
+    "deepseek-v3",
+    "deepseek-v4",
+    # Qwen: qwen3.5+ and QwQ think by default (qwen3:*-instruct does not)
+    "qwen3.5",
+    "qwq",
+    # Zhipu GLM 5+
+    "glm-5",
+    # Moonshot Kimi k2.5 and later
+    "kimi-k2.5",
+    "kimi-k2.6",
+    "kimi-k2.7",
+    "kimi-k3",
+    # MiniMax m-series
+    "minimax-m",
+    # NVIDIA Nemotron 3
+    "nemotron-3",
+    # Mistral reasoning family
+    "magistral",
+)
+
+
+def _base_model_name(model: str) -> str:
+    """Lowercased model name with any provider prefix ("openai/o3") stripped."""
+    m = model.lower()
+    if "/" in m:
+        m = m.rsplit("/", 1)[-1]
+    return m
+
+
+def is_reasoning_model(model: str) -> bool:
+    """Whether the model generates hidden reasoning that consumes output budget.
+
+    Prefix-matches the base model name against known reasoning families and
+    falls back to ``think``/``reason`` substrings (covers explicit variants
+    like ``qwen3:4b-thinking-2507``). Unknown models default to False — the
+    classic instruct budget is the safer historical behavior.
+    """
+    m = _base_model_name(model)
+    if any(m == p or m.startswith(p) for p in _REASONING_MODEL_PREFIXES):
+        return True
+    return "think" in m or "reason" in m
+
+
+def default_max_tokens(provider: str, model: str) -> int:
+    """Model-appropriate output-token budget.
+
+    ``NEGMAS_LLM_DEFAULT_MAX_TOKENS`` overrides for every model when set.
+    """
+    env = os.environ.get("NEGMAS_LLM_DEFAULT_MAX_TOKENS")
+    if env:
+        return int(env)
+    return (
+        DEFAULT_MAX_TOKENS_REASONING
+        if is_reasoning_model(model)
+        else DEFAULT_MAX_TOKENS
+    )
+
+
+def default_temperature(provider: str, model: str) -> float | None:
+    """Model-appropriate sampling temperature, or None to omit the parameter.
+
+    OpenAI/Azure reasoning models (o-series, gpt-5) reject non-default
+    temperatures, so None is returned for them and the parameter is not sent.
+    ``NEGMAS_LLM_DEFAULT_TEMPERATURE`` overrides for every model when set.
+    """
+    env = os.environ.get("NEGMAS_LLM_DEFAULT_TEMPERATURE")
+    if env:
+        return float(env)
+    if provider.lower() in ("openai", "azure") and _is_openai_reasoning_model(model):
+        return None
+    return DEFAULT_TEMPERATURE
+
+
+def resolve_max_tokens(provider: str, model: str, value: int | None) -> int:
+    """The explicit ``value`` if given, else the model-appropriate default."""
+    return value if value is not None else default_max_tokens(provider, model)
+
+
+def resolve_temperature(
+    provider: str, model: str, value: float | None
+) -> float | None:
+    """The explicit ``value`` if given, else the model-appropriate default."""
+    return value if value is not None else default_temperature(provider, model)
+
+
+def apply_temperature(
+    kwargs: dict[str, Any],
+    provider: str,
+    model: str,
+    temperature: float | None,
+) -> None:
+    """Inject the resolved temperature into ``kwargs``.
+
+    A ``temperature`` already present (e.g. via ``llm_kwargs``) wins. When the
+    resolved value is None (models that reject the parameter), nothing is sent.
+    """
+    if "temperature" in kwargs:
+        return
+    resolved = resolve_temperature(provider, model, temperature)
+    if resolved is not None:
+        kwargs["temperature"] = resolved
+
+
+# =============================================================================
 # max_tokens parameter handling per provider/model
 # =============================================================================
 
@@ -153,10 +292,12 @@ def apply_max_tokens(
 
     Skips injection if the user already supplied any known token-limit alias
     (e.g., passed `num_predict` directly in `llm_kwargs`) — that override wins.
-    Pass `max_tokens=None` to skip entirely.
+    ``max_tokens=None`` resolves the model-appropriate default (see
+    ``default_max_tokens``): reasoning models get a budget large enough that
+    hidden thinking cannot starve the visible response.
     """
-    if max_tokens is None:
-        return
     if any(alias in kwargs for alias in TOKEN_LIMIT_ALIASES):
         return
-    kwargs[max_tokens_param_name(provider, model)] = max_tokens
+    kwargs[max_tokens_param_name(provider, model)] = resolve_max_tokens(
+        provider, model, max_tokens
+    )

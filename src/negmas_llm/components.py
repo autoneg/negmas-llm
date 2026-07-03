@@ -22,7 +22,11 @@ from negmas.gb.components import AcceptancePolicy, GBComponent, OfferingPolicy
 from negmas.inout import serialize
 from negmas.outcomes import Outcome
 
-from negmas_llm.common import apply_max_tokens, litellm_model_string
+from negmas_llm.common import (
+    apply_max_tokens,
+    apply_temperature,
+    litellm_model_string,
+)
 from negmas_llm.tags import process_prompt
 
 if TYPE_CHECKING:
@@ -121,8 +125,11 @@ class LLMComponentMixin(ABC):
         model: The model name (e.g., "gpt-4", "claude-3-opus").
         api_key: API key for the provider (if required).
         api_base: Base URL for the API (useful for local deployments).
-        temperature: Sampling temperature for the LLM.
-        max_tokens: Maximum tokens in the LLM response.
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         _conversation_history: List to store conversation history.
     """
@@ -132,8 +139,8 @@ class LLMComponentMixin(ABC):
     model: str
     api_key: str | None
     api_base: str | None
-    temperature: float
-    max_tokens: int
+    temperature: float | None
+    max_tokens: int | None
     llm_kwargs: dict[str, Any]
     _conversation_history: list[dict[str, str]]
 
@@ -193,9 +200,11 @@ class LLMComponentMixin(ABC):
         kwargs: dict[str, Any] = {
             "model": self.get_model_string(),
             "messages": processed_messages,
-            "temperature": self.temperature,
             **self.llm_kwargs,
         }
+        # Model-dependent parameters: explicit values win; None resolves a
+        # model-appropriate default. llm_kwargs aliases take precedence.
+        apply_temperature(kwargs, self.provider, self.model, self.temperature)
         apply_max_tokens(
             kwargs,
             self.provider,
@@ -343,8 +352,11 @@ class LLMAcceptancePolicy(AcceptancePolicy, LLMComponentMixin):
         model: The model name (e.g., "gpt-4", "claude-3-opus").
         api_key: API key for the provider (if required).
         api_base: Base URL for the API (useful for local deployments).
-        temperature: Sampling temperature for the LLM.
-        max_tokens: Maximum tokens in the LLM response.
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         system_prompt: Custom system prompt. Supports tags like {{outcome-space}}.
         response_instructions: Custom response format instructions.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
@@ -368,8 +380,8 @@ class LLMAcceptancePolicy(AcceptancePolicy, LLMComponentMixin):
     model: str = field()
     api_key: str | None = field(default=None)
     api_base: str | None = field(default=None)
-    temperature: float = field(default=0.7)
-    max_tokens: int = field(default=1024)
+    temperature: float | None = field(default=None)
+    max_tokens: int | None = field(default=None)
     raise_on_parsing_error: bool = field(default=False)
     llm_kwargs: dict[str, Any] = field(factory=dict)
     _conversation_history: list[dict[str, str]] = field(factory=list, init=False)
@@ -494,8 +506,11 @@ class LLMOfferingPolicy(OfferingPolicy, LLMComponentMixin):
         model: The model name (e.g., "gpt-4", "claude-3-opus").
         api_key: API key for the provider (if required).
         api_base: Base URL for the API (useful for local deployments).
-        temperature: Sampling temperature for the LLM.
-        max_tokens: Maximum tokens in the LLM response.
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         system_prompt: Custom system prompt. Supports tags like {{outcome-space}}.
         response_instructions: Custom response format instructions.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
@@ -519,8 +534,8 @@ class LLMOfferingPolicy(OfferingPolicy, LLMComponentMixin):
     model: str = field()
     api_key: str | None = field(default=None)
     api_base: str | None = field(default=None)
-    temperature: float = field(default=0.7)
-    max_tokens: int = field(default=1024)
+    temperature: float | None = field(default=None)
+    max_tokens: int | None = field(default=None)
     raise_on_parsing_error: bool = field(default=False)
     llm_kwargs: dict[str, Any] = field(factory=dict)
     _conversation_history: list[dict[str, str]] = field(factory=list, init=False)
@@ -742,8 +757,11 @@ class LLMNegotiationSupporter(GBComponent, LLMComponentMixin):
         model: The model name (e.g., "gpt-4", "claude-3-opus").
         api_key: API key for the provider (if required).
         api_base: Base URL for the API (useful for local deployments).
-        temperature: Sampling temperature for the LLM.
-        max_tokens: Maximum tokens in the LLM response.
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
 
@@ -770,8 +788,8 @@ class LLMNegotiationSupporter(GBComponent, LLMComponentMixin):
     model: str = field()
     api_key: str | None = field(default=None)
     api_base: str | None = field(default=None)
-    temperature: float = field(default=0.7)
-    max_tokens: int = field(default=1024)
+    temperature: float | None = field(default=None)
+    max_tokens: int | None = field(default=None)
     llm_kwargs: dict[str, Any] = field(factory=dict)
     _conversation_history: list[dict[str, str]] = field(factory=list, init=False)
 
@@ -927,8 +945,11 @@ class LLMValidator(GBComponent, LLMComponentMixin):
             - "validate_only": Only report mismatches, don't modify
         api_key: API key for the provider (if required).
         api_base: Base URL for the API (useful for local deployments).
-        temperature: Sampling temperature for the LLM.
-        max_tokens: Maximum tokens in the LLM response.
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         validation_prompt: Custom validation prompt.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
 
@@ -954,8 +975,8 @@ class LLMValidator(GBComponent, LLMComponentMixin):
     model: str = field()
     api_key: str | None = field(default=None)
     api_base: str | None = field(default=None)
-    temperature: float = field(default=0.7)
-    max_tokens: int = field(default=1024)
+    temperature: float | None = field(default=None)
+    max_tokens: int | None = field(default=None)
     llm_kwargs: dict[str, Any] = field(factory=dict)
     _conversation_history: list[dict[str, str]] = field(factory=list, init=False)
 

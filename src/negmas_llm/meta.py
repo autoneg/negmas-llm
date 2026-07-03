@@ -20,7 +20,12 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 
-from negmas_llm.common import DEFAULT_MODELS, apply_max_tokens, litellm_model_string
+from negmas_llm.common import (
+    DEFAULT_MODELS,
+    apply_max_tokens,
+    apply_temperature,
+    litellm_model_string,
+)
 from negmas_llm.tags import process_prompt
 
 DEFAULT_OLLAMA_MODEL = DEFAULT_MODELS.get("ollama", "qwen3:4b-instruct")
@@ -101,8 +106,11 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         model: The model name (e.g., "gpt-4", "claude-3-opus").
         api_key: API key for the provider (if required).
         api_base: Base URL for the API (useful for local deployments).
-        temperature: Sampling temperature for the LLM (default: 0.7).
-        max_tokens: Maximum tokens in the LLM response (default: 512).
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout. Useful for
             debugging and understanding the LLM's text generation process.
             Default is False.
@@ -139,8 +147,8 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 512,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         timeout: float | int | None = None,
         num_retries: int | None = None,
         verbose: bool = False,
@@ -401,9 +409,11 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         kwargs: dict[str, Any] = {
             "model": self.get_model_string(),
             "messages": processed_messages,
-            "temperature": self.temperature,
             **self.llm_kwargs,
         }
+        # Model-dependent parameters: explicit values win; None resolves a
+        # model-appropriate default. llm_kwargs aliases take precedence.
+        apply_temperature(kwargs, self.provider, self.model, self.temperature)
         apply_max_tokens(
             kwargs,
             self.provider,
@@ -587,8 +597,11 @@ class LLMAspirationNegotiator(LLMMetaNegotiator):
         model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
-        temperature: Sampling temperature for the LLM (default: 0.7).
-        max_tokens: Maximum tokens in the LLM response (default: 512).
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
@@ -602,8 +615,8 @@ class LLMAspirationNegotiator(LLMMetaNegotiator):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 512,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
@@ -638,8 +651,11 @@ class LLMBoulwareTBNegotiator(LLMMetaNegotiator):
         model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
-        temperature: Sampling temperature for the LLM (default: 0.7).
-        max_tokens: Maximum tokens in the LLM response (default: 512).
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
@@ -653,8 +669,8 @@ class LLMBoulwareTBNegotiator(LLMMetaNegotiator):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 512,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
@@ -689,8 +705,11 @@ class LLMConcederTBNegotiator(LLMMetaNegotiator):
         model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
-        temperature: Sampling temperature for the LLM (default: 0.7).
-        max_tokens: Maximum tokens in the LLM response (default: 512).
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
@@ -704,8 +723,8 @@ class LLMConcederTBNegotiator(LLMMetaNegotiator):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 512,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
@@ -739,8 +758,11 @@ class LLMLinearTBNegotiator(LLMMetaNegotiator):
         model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
-        temperature: Sampling temperature for the LLM (default: 0.7).
-        max_tokens: Maximum tokens in the LLM response (default: 512).
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
@@ -754,8 +776,8 @@ class LLMLinearTBNegotiator(LLMMetaNegotiator):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 512,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
@@ -789,8 +811,11 @@ class LLMTimeBasedConcedingNegotiator(LLMMetaNegotiator):
         model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
-        temperature: Sampling temperature for the LLM (default: 0.7).
-        max_tokens: Maximum tokens in the LLM response (default: 512).
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
@@ -804,8 +829,8 @@ class LLMTimeBasedConcedingNegotiator(LLMMetaNegotiator):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 512,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
@@ -839,8 +864,11 @@ class LLMTimeBasedNegotiator(LLMMetaNegotiator):
         model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
-        temperature: Sampling temperature for the LLM (default: 0.7).
-        max_tokens: Maximum tokens in the LLM response (default: 512).
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
@@ -854,8 +882,8 @@ class LLMTimeBasedNegotiator(LLMMetaNegotiator):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 512,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
@@ -889,8 +917,11 @@ class LLMNiceNegotiator(LLMMetaNegotiator):
         model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
-        temperature: Sampling temperature for the LLM (default: 0.7).
-        max_tokens: Maximum tokens in the LLM response (default: 512).
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
@@ -904,8 +935,8 @@ class LLMNiceNegotiator(LLMMetaNegotiator):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 512,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
@@ -938,8 +969,11 @@ class LLMToughNegotiator(LLMMetaNegotiator):
         model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
-        temperature: Sampling temperature for the LLM (default: 0.7).
-        max_tokens: Maximum tokens in the LLM response (default: 512).
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
@@ -953,8 +987,8 @@ class LLMToughNegotiator(LLMMetaNegotiator):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 512,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
@@ -988,8 +1022,11 @@ class LLMNaiveTitForTatNegotiator(LLMMetaNegotiator):
         model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
-        temperature: Sampling temperature for the LLM (default: 0.7).
-        max_tokens: Maximum tokens in the LLM response (default: 512).
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
@@ -1003,8 +1040,8 @@ class LLMNaiveTitForTatNegotiator(LLMMetaNegotiator):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 512,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
@@ -1038,8 +1075,11 @@ class LLMRandomNegotiator(LLMMetaNegotiator):
         model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
-        temperature: Sampling temperature for the LLM (default: 0.7).
-        max_tokens: Maximum tokens in the LLM response (default: 512).
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
@@ -1053,8 +1093,8 @@ class LLMRandomNegotiator(LLMMetaNegotiator):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 512,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
@@ -1088,8 +1128,11 @@ class LLMRandomAlwaysAcceptingNegotiator(LLMMetaNegotiator):
         model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
-        temperature: Sampling temperature for the LLM (default: 0.7).
-        max_tokens: Maximum tokens in the LLM response (default: 512).
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
@@ -1103,8 +1146,8 @@ class LLMRandomAlwaysAcceptingNegotiator(LLMMetaNegotiator):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 512,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
@@ -1137,8 +1180,11 @@ class LLMCABNegotiator(LLMMetaNegotiator):
         model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
-        temperature: Sampling temperature for the LLM (default: 0.7).
-        max_tokens: Maximum tokens in the LLM response (default: 512).
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
@@ -1152,8 +1198,8 @@ class LLMCABNegotiator(LLMMetaNegotiator):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 512,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
@@ -1186,8 +1232,11 @@ class LLMCANNegotiator(LLMMetaNegotiator):
         model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
-        temperature: Sampling temperature for the LLM (default: 0.7).
-        max_tokens: Maximum tokens in the LLM response (default: 512).
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
@@ -1201,8 +1250,8 @@ class LLMCANNegotiator(LLMMetaNegotiator):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 512,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
@@ -1235,8 +1284,11 @@ class LLMCARNegotiator(LLMMetaNegotiator):
         model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
-        temperature: Sampling temperature for the LLM (default: 0.7).
-        max_tokens: Maximum tokens in the LLM response (default: 512).
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
@@ -1250,8 +1302,8 @@ class LLMCARNegotiator(LLMMetaNegotiator):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 512,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
@@ -1284,8 +1336,11 @@ class LLMMiCRONegotiator(LLMMetaNegotiator):
         model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
-        temperature: Sampling temperature for the LLM (default: 0.7).
-        max_tokens: Maximum tokens in the LLM response (default: 512).
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
@@ -1299,8 +1354,8 @@ class LLMMiCRONegotiator(LLMMetaNegotiator):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 512,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
@@ -1333,8 +1388,11 @@ class LLMFastMiCRONegotiator(LLMMetaNegotiator):
         model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
-        temperature: Sampling temperature for the LLM (default: 0.7).
-        max_tokens: Maximum tokens in the LLM response (default: 512).
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
@@ -1348,8 +1406,8 @@ class LLMFastMiCRONegotiator(LLMMetaNegotiator):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 512,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
@@ -1382,8 +1440,11 @@ class LLMUtilBasedNegotiator(LLMMetaNegotiator):
         model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
-        temperature: Sampling temperature for the LLM (default: 0.7).
-        max_tokens: Maximum tokens in the LLM response (default: 512).
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
@@ -1397,8 +1458,8 @@ class LLMUtilBasedNegotiator(LLMMetaNegotiator):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 512,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
@@ -1431,8 +1492,11 @@ class LLMWARNegotiator(LLMMetaNegotiator):
         model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
-        temperature: Sampling temperature for the LLM (default: 0.7).
-        max_tokens: Maximum tokens in the LLM response (default: 512).
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
@@ -1446,8 +1510,8 @@ class LLMWARNegotiator(LLMMetaNegotiator):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 512,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
@@ -1480,8 +1544,11 @@ class LLMWANNegotiator(LLMMetaNegotiator):
         model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
-        temperature: Sampling temperature for the LLM (default: 0.7).
-        max_tokens: Maximum tokens in the LLM response (default: 512).
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
@@ -1495,8 +1562,8 @@ class LLMWANNegotiator(LLMMetaNegotiator):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 512,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
@@ -1529,8 +1596,11 @@ class LLMWABNegotiator(LLMMetaNegotiator):
         model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
-        temperature: Sampling temperature for the LLM (default: 0.7).
-        max_tokens: Maximum tokens in the LLM response (default: 512).
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
@@ -1544,8 +1614,8 @@ class LLMWABNegotiator(LLMMetaNegotiator):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 512,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
@@ -1578,8 +1648,11 @@ class LLMLimitedOutcomesNegotiator(LLMMetaNegotiator):
         model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
-        temperature: Sampling temperature for the LLM (default: 0.7).
-        max_tokens: Maximum tokens in the LLM response (default: 512).
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
@@ -1593,8 +1666,8 @@ class LLMLimitedOutcomesNegotiator(LLMMetaNegotiator):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 512,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
@@ -1627,8 +1700,11 @@ class LLMLimitedOutcomesAcceptor(LLMMetaNegotiator):
         model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
-        temperature: Sampling temperature for the LLM (default: 0.7).
-        max_tokens: Maximum tokens in the LLM response (default: 512).
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
@@ -1642,8 +1718,8 @@ class LLMLimitedOutcomesAcceptor(LLMMetaNegotiator):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 512,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
@@ -1677,8 +1753,11 @@ class LLMHybridNegotiator(LLMMetaNegotiator):
         model: The model name (default: DEFAULT_OLLAMA_MODEL).
         api_key: API key for the provider (if required).
         api_base: Base URL for the API.
-        temperature: Sampling temperature for the LLM (default: 0.7).
-        max_tokens: Maximum tokens in the LLM response (default: 512).
+        temperature: Sampling temperature for the LLM. None (default) selects
+            a model-appropriate value.
+        max_tokens: Maximum tokens in the LLM response. None (default) selects
+            a model-appropriate budget (larger for reasoning/thinking models so
+            hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
@@ -1693,8 +1772,8 @@ class LLMHybridNegotiator(LLMMetaNegotiator):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 512,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
