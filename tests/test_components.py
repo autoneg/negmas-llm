@@ -74,8 +74,9 @@ class TestLLMAcceptancePolicyUnit:
         )
         assert policy.provider == "openai"
         assert policy.model == "gpt-4o"
-        assert policy.temperature == 0.7
-        assert policy.max_tokens == 1024
+        # None => resolved to a model-appropriate value at call time
+        assert policy.temperature is None
+        assert policy.max_tokens is None
         assert policy.api_key is None
 
     def test_initialization_with_custom_params(self):
