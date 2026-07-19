@@ -187,9 +187,7 @@ def resolve_max_tokens(provider: str, model: str, value: int | None) -> int:
     return value if value is not None else default_max_tokens(provider, model)
 
 
-def resolve_temperature(
-    provider: str, model: str, value: float | None
-) -> float | None:
+def resolve_temperature(provider: str, model: str, value: float | None) -> float | None:
     """The explicit ``value`` if given, else the model-appropriate default."""
     return value if value is not None else default_temperature(provider, model)
 
