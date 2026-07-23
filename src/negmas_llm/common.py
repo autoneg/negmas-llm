@@ -50,27 +50,59 @@ def resolve_ollama_api_base(default: str = "http://localhost:11434") -> str:
     return f"http://{host}"
 
 
-DEFAULT_MODELS: dict[str, str] = {
-    "ollama": _get_default_model("ollama", "qwen3:4b-instruct"),
-    "openai": _get_default_model("openai", "gpt-4o-mini"),
-    "anthropic": _get_default_model("anthropic", "claude-sonnet-4-20250514"),
-    "gemini": _get_default_model("gemini", "gemini-2.0-flash"),
-    "github_copilot": _get_default_model(
-        "github_copilot", "gpt-4o"
-    ),  # GitHub Copilot (OAuth device flow)
-    "github": _get_default_model("github", "gpt-4o"),  # GitHub Models marketplace
-    "groq": _get_default_model("groq", "llama-3.3-70b-versatile"),
-    "mistral": _get_default_model("mistral", "mistral-large-latest"),
-    "deepseek": _get_default_model("deepseek", "deepseek-chat"),
-    "openrouter": _get_default_model("openrouter", "openai/gpt-4o-mini"),
-    "together_ai": _get_default_model(
-        "together_ai", "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo"
-    ),
-    "cohere": _get_default_model("cohere", "command-r-plus"),
-    "huggingface": _get_default_model(
-        "huggingface", "meta-llama/Llama-3.2-3B-Instruct"
-    ),
+# =============================================================================
+# Per-provider default models (single source of truth for hardcoded fallbacks)
+# =============================================================================
+#
+# ``_MODEL_FALLBACKS`` holds the pure, hardcoded default model for each provider
+# with NO environment lookups. It is the one place these baked-in values live.
+# ``DEFAULT_MODELS`` layers the ``NEGMAS_LLM_<PROVIDER>_DEFAULT_MODEL`` env var on
+# top at import time (kept for backwards compatibility). ``default_model_for_
+# provider`` does the same lookup but *live* (re-reads the environment on every
+# call), which is what the per-negotiator resolver in ``config.py`` uses so that
+# ``export``-ing a variable then constructing a negotiator takes effect without
+# reimporting the package.
+_MODEL_FALLBACKS: dict[str, str] = {
+    "ollama": "qwen3:4b-instruct",
+    "openai": "gpt-4o-mini",
+    "anthropic": "claude-sonnet-4-20250514",
+    "gemini": "gemini-2.0-flash",
+    "github_copilot": "gpt-4o",  # GitHub Copilot (OAuth device flow)
+    "github": "gpt-4o",  # GitHub Models marketplace
+    "groq": "llama-3.3-70b-versatile",
+    "mistral": "mistral-large-latest",
+    "deepseek": "deepseek-chat",
+    "openrouter": "openai/gpt-4o-mini",
+    "together_ai": "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+    "cohere": "command-r-plus",
+    "huggingface": "meta-llama/Llama-3.2-3B-Instruct",
 }
+
+#: Per-provider default model, with ``NEGMAS_LLM_<PROVIDER>_DEFAULT_MODEL``
+#: applied at import time. Prefer :func:`default_model_for_provider` for live
+#: resolution.
+DEFAULT_MODELS: dict[str, str] = {
+    provider: _get_default_model(provider, fallback)
+    for provider, fallback in _MODEL_FALLBACKS.items()
+}
+
+
+def default_model_for_provider(provider: str) -> str:
+    """Live per-provider default model.
+
+    Reads ``NEGMAS_LLM_<PROVIDER>_DEFAULT_MODEL`` (and legacy ``OLLAMA_MODEL``)
+    on every call, falling back to the hardcoded value in ``_MODEL_FALLBACKS``.
+    Unlike ``DEFAULT_MODELS`` (frozen at import), this reflects environment
+    changes made after the package was imported.
+
+    Args:
+        provider: Provider name (e.g. ``"ollama"``, ``"openai"``).
+
+    Returns:
+        The resolved default model name for the provider (``""`` if the
+        provider is unknown and no env var is set).
+    """
+    return _get_default_model(provider, _MODEL_FALLBACKS.get(provider, ""))
 
 
 # =============================================================================
@@ -155,9 +187,12 @@ def is_reasoning_model(model: str) -> bool:
 def default_max_tokens(provider: str, model: str) -> int:
     """Model-appropriate output-token budget.
 
-    ``NEGMAS_LLM_DEFAULT_MAX_TOKENS`` overrides for every model when set.
+    ``NEGMAS_LLM_MAX_TOKENS`` (canonical) or ``NEGMAS_LLM_DEFAULT_MAX_TOKENS``
+    (legacy alias) overrides for every model when set.
     """
-    env = os.environ.get("NEGMAS_LLM_DEFAULT_MAX_TOKENS")
+    env = os.environ.get("NEGMAS_LLM_MAX_TOKENS") or os.environ.get(
+        "NEGMAS_LLM_DEFAULT_MAX_TOKENS"
+    )
     if env:
         return int(env)
     return (
@@ -172,9 +207,12 @@ def default_temperature(provider: str, model: str) -> float | None:
 
     OpenAI/Azure reasoning models (o-series, gpt-5) reject non-default
     temperatures, so None is returned for them and the parameter is not sent.
-    ``NEGMAS_LLM_DEFAULT_TEMPERATURE`` overrides for every model when set.
+    ``NEGMAS_LLM_TEMPERATURE`` (canonical) or ``NEGMAS_LLM_DEFAULT_TEMPERATURE``
+    (legacy alias) overrides for every model when set.
     """
-    env = os.environ.get("NEGMAS_LLM_DEFAULT_TEMPERATURE")
+    env = os.environ.get("NEGMAS_LLM_TEMPERATURE") or os.environ.get(
+        "NEGMAS_LLM_DEFAULT_TEMPERATURE"
+    )
     if env:
         return float(env)
     if provider.lower() in ("openai", "azure") and _is_openai_reasoning_model(model):
@@ -190,6 +228,23 @@ def resolve_max_tokens(provider: str, model: str, value: int | None) -> int:
 def resolve_temperature(provider: str, model: str, value: float | None) -> float | None:
     """The explicit ``value`` if given, else the model-appropriate default."""
     return value if value is not None else default_temperature(provider, model)
+
+
+def apply_effort(kwargs: dict[str, Any], effort: str | None) -> None:
+    """Inject the reasoning effort into ``kwargs`` as ``reasoning_effort``.
+
+    Pass-through: whether a given provider/model accepts ``reasoning_effort``
+    varies and drifts, so the value is sent verbatim only when set and only if
+    not already provided (a ``reasoning_effort`` already in ``kwargs`` — e.g.
+    via ``llm_kwargs`` — wins). A tier's effort should therefore be paired with
+    a reasoning-capable model; a mismatch surfaces as a provider error rather
+    than being silently suppressed here.
+    """
+    if effort is None:
+        return
+    if "reasoning_effort" in kwargs:
+        return
+    kwargs["reasoning_effort"] = effort
 
 
 def apply_temperature(

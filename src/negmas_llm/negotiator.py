@@ -27,11 +27,16 @@ from rich.syntax import Syntax
 from rich.table import Table
 
 from negmas_llm.common import (
-    DEFAULT_MODELS,
+    apply_effort,
     apply_max_tokens,
     apply_temperature,
     litellm_model_string,
     resolve_ollama_api_base,
+)
+from negmas_llm.config import (
+    DEFAULT_PROVIDER,
+    effective_llm_config,
+    resolve_llm_config,
 )
 from negmas_llm.tags import process_prompt as _process_prompt
 
@@ -320,9 +325,24 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
     - outcome: Counter-offer if rejecting
     - text: Optional persuasion text for the opponent
 
+    Provider, model, and the other LLM settings are resolved in one place (see
+    ``negmas_llm.config``): an explicit argument here wins, otherwise the value
+    comes from ``NEGMAS_LLM_<ClassName>_<VAR>`` (per negotiator type), then
+    ``NEGMAS_LLM_<VAR>`` (global), then the built-in default. This makes it easy
+    to switch models for a whole experiment — or just one negotiator type — from
+    the environment. Parts of a negotiator can also request a named *model type*
+    (tier) per call via ``_call_llm(..., model_type="fast")``, which reads the
+    same variables with the uppercased tier appended (``NEGMAS_LLM_MODEL_FAST``).
+    See ``docs/guide/environment-variables.md``.
+
     Args:
         provider: The LLM provider (e.g., "openai", "anthropic", "ollama").
-        model: The model name (e.g., "gpt-4", "claude-3-opus").
+            None (default) resolves from the environment/defaults.
+        model: The model name (e.g., "gpt-4", "claude-3-opus"). None (default)
+            resolves from the environment/defaults.
+        effort: Reasoning effort (e.g. "low"/"medium"/"high") sent verbatim as
+            ``reasoning_effort``. None (default) omits it unless resolved from the
+            environment. Pair with a reasoning-capable model.
         api_key: API key for the provider (if required).
         api_base: Base URL for the API (useful for local deployments).
         temperature: Sampling temperature for the LLM. None (default) selects a
@@ -366,11 +386,23 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         **kwargs: Additional arguments passed to SAOCallNegotiator.
     """
 
+    #: Built-in fallback provider for this class (used only when neither an
+    #: explicit argument nor an environment variable selects one). Provider-named
+    #: subclasses set this together with ``LOCK_PROVIDER``.
+    DEFAULT_PROVIDER: str | None = None
+    #: Built-in fallback model for this class. ``None`` defers to the
+    #: per-provider default table in :mod:`negmas_llm.common`.
+    DEFAULT_MODEL: str | None = None
+    #: When True the global ``NEGMAS_LLM_PROVIDER`` is ignored for this class
+    #: (its provider is part of its identity). Per-type overrides still apply.
+    LOCK_PROVIDER: bool = False
+
     def __init__(
         self,
-        provider: str,
-        model: str,
+        provider: str | None = None,
+        model: str | None = None,
         *,
+        effort: str | None = None,
         api_key: str | None = None,
         api_base: str | None = None,
         temperature: float | None = None,
@@ -408,26 +440,33 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             can_propose=can_propose,
             **kwargs,
         )
-        self.provider = provider
-        self.model = model
-        self.api_key = api_key
-        self.api_base = api_base
-        self.temperature = temperature
-        self.max_tokens = max_tokens
-        # Timeout: use provided value, or fall back to NEGMAS_LLM_TIMEOUT env var
-        self.timeout: float | int | None
-        if timeout is not None:
-            self.timeout = timeout
-        else:
-            env_timeout = os.environ.get("NEGMAS_LLM_TIMEOUT")
-            self.timeout = float(env_timeout) if env_timeout else None
-        # Num retries: use provided value, or fall back to env var
-        self.num_retries: int | None
-        if num_retries is not None:
-            self.num_retries = num_retries
-        else:
-            env_retries = os.environ.get("NEGMAS_LLM_NUM_RETRIES")
-            self.num_retries = int(env_retries) if env_retries else None
+        # Single source of truth: resolve provider/model/etc. from the explicit
+        # arguments, per-type and global environment variables, and this class's
+        # built-in fallbacks. See negmas_llm.config for the precedence rules.
+        resolved = resolve_llm_config(
+            type(self).__name__,
+            provider=provider,
+            model=model,
+            effort=effort,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            num_retries=num_retries,
+            default_provider=self.DEFAULT_PROVIDER or DEFAULT_PROVIDER,
+            default_model=self.DEFAULT_MODEL,
+            lock_provider=self.LOCK_PROVIDER,
+        )
+        self.provider = resolved.provider
+        self.model = resolved.model
+        self.effort = resolved.effort
+        self.api_key = resolved.api_key
+        self.api_base = resolved.api_base
+        self.temperature = resolved.temperature
+        self.max_tokens = resolved.max_tokens
+        self.timeout: float | int | None = resolved.timeout
+        self.num_retries: int | None = resolved.num_retries
         self.use_structured_output = use_structured_output
         self.include_reasoning = include_reasoning
         self.raise_on_parsing_error = raise_on_parsing_error
@@ -570,6 +609,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         messages: list[dict[str, str]],
         require_json: bool = False,
         max_tokens: int | None = None,
+        model_type: str | None = None,
     ) -> str:
         """Call the LLM and get a response.
 
@@ -577,14 +617,20 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             messages: The conversation messages.
             require_json: If True and provider supports it, enforce JSON output.
             max_tokens: Per-call override for the output token cap. If None,
-                uses ``self.max_tokens``. A provider-specific alias (e.g.,
+                uses the resolved max tokens. A provider-specific alias (e.g.,
                 ``num_predict``) in ``self.llm_kwargs`` always takes precedence.
+            model_type: Optional model type/tier (e.g. ``"fast"``, ``"accurate"``)
+                to use for *this* call. When given, provider/model/effort/etc. are
+                re-resolved from the ``NEGMAS_LLM_<...>_<VAR>_<TYPE>`` variables so
+                different parts of the negotiator can use different models. When
+                None, the negotiator's own construction-time settings are used.
 
         Returns:
             The LLM response text.
         """
+        cfg = effective_llm_config(self, model_type)
         kwargs: dict[str, Any] = {
-            "model": self.get_model_string(),
+            "model": litellm_model_string(cfg.provider, cfg.model),
             "messages": messages,
             **self.llm_kwargs,
         }
@@ -592,34 +638,35 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         # wins; None resolves a model-appropriate default (larger token budget
         # for reasoning models, temperature omitted where unsupported). A
         # provider-specific alias in llm_kwargs takes precedence over both.
-        apply_temperature(kwargs, self.provider, self.model, self.temperature)
+        apply_temperature(kwargs, cfg.provider, cfg.model, cfg.temperature)
         apply_max_tokens(
             kwargs,
-            self.provider,
-            self.model,
-            max_tokens if max_tokens is not None else self.max_tokens,
+            cfg.provider,
+            cfg.model,
+            max_tokens if max_tokens is not None else cfg.max_tokens,
         )
+        apply_effort(kwargs, cfg.effort)
 
-        if self.api_key:
-            kwargs["api_key"] = self.api_key
-        if self.api_base:
-            kwargs["api_base"] = self.api_base
-        if self.timeout is not None:
-            kwargs["timeout"] = self.timeout
-        if self.num_retries is not None:
-            kwargs["num_retries"] = self.num_retries
+        if cfg.api_key:
+            kwargs["api_key"] = cfg.api_key
+        if cfg.api_base:
+            kwargs["api_base"] = cfg.api_base
+        if cfg.timeout is not None:
+            kwargs["timeout"] = cfg.timeout
+        if cfg.num_retries is not None:
+            kwargs["num_retries"] = cfg.num_retries
 
         # Add structured output / JSON mode if requested and supported
         if require_json and self.use_structured_output:
-            if _supports_structured_output(self.provider):
+            if _supports_structured_output(cfg.provider):
                 # Use full JSON schema for providers that support it
                 kwargs["response_format"] = _NEGOTIATION_RESPONSE_SCHEMA
-            elif _supports_json_mode(self.provider):
+            elif _supports_json_mode(cfg.provider):
                 # Fall back to basic JSON mode
                 kwargs["response_format"] = {"type": "json_object"}
 
         # Add required headers for GitHub Copilot (simulates IDE client)
-        if self.provider == "github_copilot":
+        if cfg.provider == "github_copilot":
             extra_headers = kwargs.get("extra_headers", {})
             extra_headers.update(_GITHUB_COPILOT_HEADERS)
             kwargs["extra_headers"] = extra_headers
@@ -631,7 +678,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             # Create a table for the prompt header
             header = Table.grid(padding=(0, 1))
             header.add_column(style="bold cyan")
-            header.add_row(f"LLM PROMPT ({self.provider}/{self.model})")
+            header.add_row(f"LLM PROMPT ({cfg.provider}/{cfg.model})")
             console.print(Panel(header, style="cyan"))
 
             for msg in messages:
@@ -657,7 +704,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             header.add_column(style="bold green")
             header.add_column(justify="right", style="bold yellow")
             header.add_row(
-                f"LLM RESPONSE ({self.provider}/{self.model})",
+                f"LLM RESPONSE ({cfg.provider}/{cfg.model})",
                 f"[{elapsed_time:.2f}s]",
             )
             console.print(Panel(header, style="green"))
@@ -686,6 +733,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         message: str,
         role: str = "user",
         require_json: bool = False,
+        model_type: str | None = None,
     ) -> str:
         """Send a message to the LLM and get a response.
 
@@ -695,6 +743,8 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             message: The message content.
             role: The role (user or system).
             require_json: If True, enforce JSON output mode if supported.
+            model_type: Optional model type/tier for this call (see
+                :meth:`_call_llm`).
 
         Returns:
             The LLM response text.
@@ -705,7 +755,9 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         messages.extend(self._conversation_history)
         messages.append({"role": role, "content": message})
 
-        response = self._call_llm(messages, require_json=require_json)
+        response = self._call_llm(
+            messages, require_json=require_json, model_type=model_type
+        )
 
         # Update conversation history
         self._conversation_history.append({"role": role, "content": message})
@@ -1229,15 +1281,18 @@ class OpenAINegotiator(LLMNegotiator):
         **kwargs: Additional arguments passed to LLMNegotiator.
     """
 
+    DEFAULT_PROVIDER = "openai"
+    DEFAULT_MODEL = "gpt-4o"
+    LOCK_PROVIDER = True
+
     def __init__(
         self,
-        model: str = "gpt-4o",
+        model: str | None = None,
         *,
         api_key: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
-            provider="openai",
             model=model,
             api_key=api_key,
             **kwargs,
@@ -1253,15 +1308,18 @@ class AnthropicNegotiator(LLMNegotiator):
         **kwargs: Additional arguments passed to LLMNegotiator.
     """
 
+    DEFAULT_PROVIDER = "anthropic"
+    DEFAULT_MODEL = "claude-sonnet-4-20250514"
+    LOCK_PROVIDER = True
+
     def __init__(
         self,
-        model: str = "claude-sonnet-4-20250514",
+        model: str | None = None,
         *,
         api_key: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
-            provider="anthropic",
             model=model,
             api_key=api_key,
             **kwargs,
@@ -1277,15 +1335,18 @@ class GeminiNegotiator(LLMNegotiator):
         **kwargs: Additional arguments passed to LLMNegotiator.
     """
 
+    DEFAULT_PROVIDER = "gemini"
+    DEFAULT_MODEL = "gemini-2.0-flash"
+    LOCK_PROVIDER = True
+
     def __init__(
         self,
-        model: str = "gemini-2.0-flash",
+        model: str | None = None,
         *,
         api_key: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
-            provider="gemini",
             model=model,
             api_key=api_key,
             **kwargs,
@@ -1301,15 +1362,18 @@ class CohereNegotiator(LLMNegotiator):
         **kwargs: Additional arguments passed to LLMNegotiator.
     """
 
+    DEFAULT_PROVIDER = "cohere"
+    DEFAULT_MODEL = "command-r-plus"
+    LOCK_PROVIDER = True
+
     def __init__(
         self,
-        model: str = "command-r-plus",
+        model: str | None = None,
         *,
         api_key: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
-            provider="cohere",
             model=model,
             api_key=api_key,
             **kwargs,
@@ -1325,15 +1389,18 @@ class MistralNegotiator(LLMNegotiator):
         **kwargs: Additional arguments passed to LLMNegotiator.
     """
 
+    DEFAULT_PROVIDER = "mistral"
+    DEFAULT_MODEL = "mistral-large-latest"
+    LOCK_PROVIDER = True
+
     def __init__(
         self,
-        model: str = "mistral-large-latest",
+        model: str | None = None,
         *,
         api_key: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
-            provider="mistral",
             model=model,
             api_key=api_key,
             **kwargs,
@@ -1349,15 +1416,18 @@ class GroqNegotiator(LLMNegotiator):
         **kwargs: Additional arguments passed to LLMNegotiator.
     """
 
+    DEFAULT_PROVIDER = "groq"
+    DEFAULT_MODEL = "llama-3.3-70b-versatile"
+    LOCK_PROVIDER = True
+
     def __init__(
         self,
-        model: str = "llama-3.3-70b-versatile",
+        model: str | None = None,
         *,
         api_key: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
-            provider="groq",
             model=model,
             api_key=api_key,
             **kwargs,
@@ -1374,15 +1444,18 @@ class TogetherAINegotiator(LLMNegotiator):
         **kwargs: Additional arguments passed to LLMNegotiator.
     """
 
+    DEFAULT_PROVIDER = "together_ai"
+    DEFAULT_MODEL = "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo"
+    LOCK_PROVIDER = True
+
     def __init__(
         self,
-        model: str = "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+        model: str | None = None,
         *,
         api_key: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
-            provider="together_ai",
             model=model,
             api_key=api_key,
             **kwargs,
@@ -1400,9 +1473,12 @@ class AzureOpenAINegotiator(LLMNegotiator):
         **kwargs: Additional arguments passed to LLMNegotiator.
     """
 
+    DEFAULT_PROVIDER = "azure"
+    LOCK_PROVIDER = True
+
     def __init__(
         self,
-        model: str,
+        model: str | None = None,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1412,7 +1488,6 @@ class AzureOpenAINegotiator(LLMNegotiator):
         llm_kwargs = kwargs.pop("llm_kwargs", {}) or {}
         llm_kwargs["api_version"] = api_version
         super().__init__(
-            provider="azure",
             model=model,
             api_key=api_key,
             api_base=api_base,
@@ -1430,9 +1505,13 @@ class AWSBedrockNegotiator(LLMNegotiator):
         **kwargs: Additional arguments passed to LLMNegotiator.
     """
 
+    DEFAULT_PROVIDER = "bedrock"
+    DEFAULT_MODEL = "anthropic.claude-3-sonnet-20240229-v1:0"
+    LOCK_PROVIDER = True
+
     def __init__(
         self,
-        model: str = "anthropic.claude-3-sonnet-20240229-v1:0",
+        model: str | None = None,
         *,
         aws_region: str = "us-east-1",
         **kwargs: Any,
@@ -1440,7 +1519,6 @@ class AWSBedrockNegotiator(LLMNegotiator):
         llm_kwargs = kwargs.pop("llm_kwargs", {}) or {}
         llm_kwargs["aws_region_name"] = aws_region
         super().__init__(
-            provider="bedrock",
             model=model,
             llm_kwargs=llm_kwargs,
             **kwargs,
@@ -1462,9 +1540,13 @@ class GitHubCopilotNegotiator(LLMNegotiator):
         **kwargs: Additional arguments passed to LLMNegotiator.
     """
 
+    DEFAULT_PROVIDER = "github_copilot"
+    DEFAULT_MODEL = "gpt-4o"
+    LOCK_PROVIDER = True
+
     def __init__(
         self,
-        model: str = "gpt-4o",
+        model: str | None = None,
         **kwargs: Any,
     ) -> None:
         # Ensure extra_headers are included via llm_kwargs
@@ -1473,7 +1555,6 @@ class GitHubCopilotNegotiator(LLMNegotiator):
         extra_headers.update(_GITHUB_COPILOT_HEADERS)
         llm_kwargs["extra_headers"] = extra_headers
         super().__init__(
-            provider="github_copilot",
             model=model,
             llm_kwargs=llm_kwargs,
             **kwargs,
@@ -1511,9 +1592,12 @@ class OllamaNegotiator(LLMNegotiator):
         **kwargs: Additional arguments passed to LLMNegotiator.
     """
 
+    DEFAULT_PROVIDER = "ollama"
+    LOCK_PROVIDER = True
+
     def __init__(
         self,
-        model: str = DEFAULT_MODELS.get("ollama", "qwen3:4b-instruct"),
+        model: str | None = None,
         *,
         api_base: str | None = None,
         api_key: str | None = None,
@@ -1524,7 +1608,6 @@ class OllamaNegotiator(LLMNegotiator):
         if api_base is None:
             api_base = _OLLAMA_CLOUD_API_BASE if api_key else resolve_ollama_api_base()
         super().__init__(
-            provider="ollama",
             model=model,
             api_base=api_base,
             api_key=api_key,
@@ -1541,15 +1624,19 @@ class VLLMNegotiator(LLMNegotiator):
         **kwargs: Additional arguments passed to LLMNegotiator.
     """
 
+    # vLLM exposes an OpenAI-compatible API, so litellm routes it via "openai".
+    DEFAULT_PROVIDER = "openai"
+    DEFAULT_MODEL = "local-model"
+    LOCK_PROVIDER = True
+
     def __init__(
         self,
-        model: str,
+        model: str | None = None,
         *,
         api_base: str = "http://localhost:8000/v1",
         **kwargs: Any,
     ) -> None:
         super().__init__(
-            provider="openai",  # vLLM exposes OpenAI-compatible API
             model=model,
             api_base=api_base,
             **kwargs,
@@ -1565,15 +1652,19 @@ class LMStudioNegotiator(LLMNegotiator):
         **kwargs: Additional arguments passed to LLMNegotiator.
     """
 
+    # LM Studio exposes an OpenAI-compatible API (litellm routes it via "openai").
+    DEFAULT_PROVIDER = "openai"
+    DEFAULT_MODEL = "local-model"
+    LOCK_PROVIDER = True
+
     def __init__(
         self,
-        model: str = "local-model",
+        model: str | None = None,
         *,
         api_base: str = "http://localhost:1234/v1",
         **kwargs: Any,
     ) -> None:
         super().__init__(
-            provider="openai",  # LM Studio exposes OpenAI-compatible API
             model=model,
             api_base=api_base,
             **kwargs,
@@ -1589,15 +1680,19 @@ class TextGenWebUINegotiator(LLMNegotiator):
         **kwargs: Additional arguments passed to LLMNegotiator.
     """
 
+    # oobabooga exposes an OpenAI-compatible API (litellm routes it via "openai").
+    DEFAULT_PROVIDER = "openai"
+    DEFAULT_MODEL = "local-model"
+    LOCK_PROVIDER = True
+
     def __init__(
         self,
-        model: str = "local-model",
+        model: str | None = None,
         *,
         api_base: str = "http://localhost:5000/v1",
         **kwargs: Any,
     ) -> None:
         super().__init__(
-            provider="openai",  # oobabooga exposes OpenAI-compatible API
             model=model,
             api_base=api_base,
             **kwargs,
@@ -1613,15 +1708,18 @@ class HuggingFaceNegotiator(LLMNegotiator):
         **kwargs: Additional arguments passed to LLMNegotiator.
     """
 
+    DEFAULT_PROVIDER = "huggingface"
+    DEFAULT_MODEL = "meta-llama/Llama-3.2-3B-Instruct"
+    LOCK_PROVIDER = True
+
     def __init__(
         self,
-        model: str = "meta-llama/Llama-3.2-3B-Instruct",
+        model: str | None = None,
         *,
         api_key: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
-            provider="huggingface",
             model=model,
             api_key=api_key,
             **kwargs,
@@ -1639,15 +1737,18 @@ class OpenRouterNegotiator(LLMNegotiator):
         **kwargs: Additional arguments passed to LLMNegotiator.
     """
 
+    DEFAULT_PROVIDER = "openrouter"
+    DEFAULT_MODEL = "openai/gpt-4o"
+    LOCK_PROVIDER = True
+
     def __init__(
         self,
-        model: str = "openai/gpt-4o",
+        model: str | None = None,
         *,
         api_key: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
-            provider="openrouter",
             model=model,
             api_key=api_key,
             **kwargs,
@@ -1663,15 +1764,18 @@ class DeepSeekNegotiator(LLMNegotiator):
         **kwargs: Additional arguments passed to LLMNegotiator.
     """
 
+    DEFAULT_PROVIDER = "deepseek"
+    DEFAULT_MODEL = "deepseek-chat"
+    LOCK_PROVIDER = True
+
     def __init__(
         self,
-        model: str = "deepseek-chat",
+        model: str | None = None,
         *,
         api_key: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
-            provider="deepseek",
             model=model,
             api_key=api_key,
             **kwargs,
@@ -1687,15 +1791,18 @@ class DashScopeNegotiator(LLMNegotiator):
         **kwargs: Additional arguments passed to LLMNegotiator.
     """
 
+    DEFAULT_PROVIDER = "dashscope"
+    DEFAULT_MODEL = "qwen3-4b-instruct"
+    LOCK_PROVIDER = True
+
     def __init__(
         self,
-        model: str = "qwen3-4b-instruct",
+        model: str | None = None,
         *,
         api_key: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
-            provider="dashscope",
             model=model,
             api_key=api_key,
             **kwargs,

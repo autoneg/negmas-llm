@@ -190,6 +190,72 @@ negotiator = LLMNegotiator(
 )
 ```
 
+### Choosing the provider & model from the environment
+
+Provider and model are resolved in **one place**
+([`negmas_llm/config.py`](src/negmas_llm/config.py)) so you can steer every
+negotiator from the environment without editing code — ideal for running the
+same experiment across different models. There are three configuration axes:
+
+| Axis | Environment variable | Scope |
+|------|----------------------|-------|
+| **Global** | `NEGMAS_LLM_<VAR>` | Every negotiator that doesn't set the value explicitly |
+| **Per negotiator type** | `NEGMAS_LLM_<ClassName>_<VAR>` | Only that one concrete class |
+| **Per provider (model)** | `NEGMAS_LLM_<PROVIDER>_DEFAULT_MODEL` | Any negotiator that ends up on that provider |
+
+`<VAR>` ∈ `PROVIDER`, `MODEL`, `EFFORT`, `TEMPERATURE`, `MAX_TOKENS`, `TIMEOUT`,
+`NUM_RETRIES`, `API_KEY`, `API_BASE`. Precedence (highest first):
+
+```
+explicit constructor arg  >  NEGMAS_LLM_<ClassName>_<VAR>  >  NEGMAS_LLM_<VAR>  >  built-in default
+```
+
+Example — run everyone on OpenAI `gpt-4o`, but one negotiator type on Anthropic
+`claude-3-opus` (a different model *and* provider):
+
+```bash
+export NEGMAS_LLM_PROVIDER=openai
+export NEGMAS_LLM_MODEL=gpt-4o
+export NEGMAS_LLM_LLMBoulwareTBNegotiator_PROVIDER=anthropic
+export NEGMAS_LLM_LLMBoulwareTBNegotiator_MODEL=claude-3-opus
+```
+
+```python
+from negmas_llm import LLMBoulwareTBNegotiator, LLMConcederTBNegotiator
+
+LLMBoulwareTBNegotiator(name="a")   # anthropic / claude-3-opus
+LLMConcederTBNegotiator(name="b")   # openai / gpt-4o
+```
+
+Two coherence rules keep a model from reaching the wrong provider: the
+provider-named classes (e.g. `OpenAINegotiator`) ignore the global
+`NEGMAS_LLM_PROVIDER`, and a global `NEGMAS_LLM_MODEL` is applied only to
+negotiators whose provider matches the global provider.
+
+**Model types (tiers).** A *model type* is a named `(provider, model, effort)`
+bundle — e.g. `fast`, `accurate` — so different parts of a negotiator can ask
+for different models. The (uppercased) type name is appended as a suffix to
+every variable, and code requests it with `model_type=`:
+
+```bash
+export NEGMAS_LLM_PROVIDER_FAST=groq
+export NEGMAS_LLM_MODEL_FAST=llama-3.1-8b-instant
+export NEGMAS_LLM_EFFORT_FAST=low
+export NEGMAS_LLM_PROVIDER_ACCURATE=openai
+export NEGMAS_LLM_MODEL_ACCURATE=o3
+export NEGMAS_LLM_EFFORT_ACCURATE=high
+```
+
+```python
+from negmas_llm import resolve_llm_config
+
+resolve_llm_config("LLMBoulwareTBNegotiator", model_type="fast")      # groq / llama-3.1-8b-instant / low
+resolve_llm_config("LLMBoulwareTBNegotiator", model_type="accurate")  # openai / o3 / high
+```
+
+See the full reference in
+[docs/guide/environment-variables.md](docs/guide/environment-variables.md).
+
 ### Testing Configuration
 
 Tests can be configured via environment variables to use different LLM providers.

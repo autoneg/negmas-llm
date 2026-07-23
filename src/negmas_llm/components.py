@@ -23,9 +23,15 @@ from negmas.inout import serialize
 from negmas.outcomes import Outcome
 
 from negmas_llm.common import (
+    apply_effort,
     apply_max_tokens,
     apply_temperature,
     litellm_model_string,
+)
+from negmas_llm.config import (
+    DEFAULT_PROVIDER,
+    effective_llm_config,
+    resolve_llm_config,
 )
 from negmas_llm.tags import process_prompt
 
@@ -137,12 +143,50 @@ class LLMComponentMixin(ABC):
     # Type hints for expected attributes (defined on subclasses)
     provider: str
     model: str
+    effort: str | None
     api_key: str | None
     api_base: str | None
     temperature: float | None
     max_tokens: int | None
     llm_kwargs: dict[str, Any]
     _conversation_history: list[dict[str, str]]
+
+    #: Built-in fallback provider for this class (see negmas_llm.config). None
+    #: resolves to the global default provider ("ollama").
+    DEFAULT_PROVIDER: str | None = None
+    #: Built-in fallback model. None defers to the per-provider default table.
+    DEFAULT_MODEL: str | None = None
+    #: When True the global NEGMAS_LLM_PROVIDER is ignored for this class.
+    LOCK_PROVIDER: bool = False
+
+    def __attrs_post_init__(self) -> None:
+        """Resolve provider/model/etc. through the single source of truth.
+
+        The concrete component's fields default to ``None``; this hook fills in
+        the effective values from explicit fields, per-type/global environment
+        variables, and the class's built-in fallbacks. See
+        :mod:`negmas_llm.config` for the precedence rules.
+        """
+        resolved = resolve_llm_config(
+            type(self).__name__,
+            provider=self.provider or None,
+            model=self.model or None,
+            effort=self.effort,
+            api_key=self.api_key,
+            api_base=self.api_base,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            default_provider=self.DEFAULT_PROVIDER or DEFAULT_PROVIDER,
+            default_model=self.DEFAULT_MODEL,
+            lock_provider=self.LOCK_PROVIDER,
+        )
+        self.provider = resolved.provider
+        self.model = resolved.model
+        self.effort = resolved.effort
+        self.api_key = resolved.api_key
+        self.api_base = resolved.api_base
+        self.temperature = resolved.temperature
+        self.max_tokens = resolved.max_tokens
 
     def get_model_string(self) -> str:
         """Get the model string for litellm."""
@@ -175,6 +219,7 @@ class LLMComponentMixin(ABC):
         negotiator: Negotiator | None = None,
         state: GBState | None = None,
         max_tokens: int | None = None,
+        model_type: str | None = None,
     ) -> str:
         """Call the LLM and get a response.
 
@@ -185,8 +230,12 @@ class LLMComponentMixin(ABC):
             negotiator: The negotiator instance (for tag processing).
             state: The current negotiation state (for tag processing).
             max_tokens: Per-call override for the output token cap. If None,
-                uses ``self.max_tokens``. A provider-specific alias in
+                uses the resolved max tokens. A provider-specific alias in
                 ``self.llm_kwargs`` always takes precedence.
+            model_type: Optional model type/tier (e.g. ``"fast"``) to use for
+                this call; re-resolves provider/model/effort/etc. from the
+                ``NEGMAS_LLM_<...>_<VAR>_<TYPE>`` variables. When None, this
+                component's own settings are used.
 
         Returns:
             The LLM response text.
@@ -197,25 +246,27 @@ class LLMComponentMixin(ABC):
             processed_content = self._process_prompt(msg["content"], negotiator, state)
             processed_messages.append({**msg, "content": processed_content})
 
+        cfg = effective_llm_config(self, model_type)
         kwargs: dict[str, Any] = {
-            "model": self.get_model_string(),
+            "model": litellm_model_string(cfg.provider, cfg.model),
             "messages": processed_messages,
             **self.llm_kwargs,
         }
         # Model-dependent parameters: explicit values win; None resolves a
         # model-appropriate default. llm_kwargs aliases take precedence.
-        apply_temperature(kwargs, self.provider, self.model, self.temperature)
+        apply_temperature(kwargs, cfg.provider, cfg.model, cfg.temperature)
         apply_max_tokens(
             kwargs,
-            self.provider,
-            self.model,
-            max_tokens if max_tokens is not None else self.max_tokens,
+            cfg.provider,
+            cfg.model,
+            max_tokens if max_tokens is not None else cfg.max_tokens,
         )
+        apply_effort(kwargs, cfg.effort)
 
-        if self.api_key:
-            kwargs["api_key"] = self.api_key
-        if self.api_base:
-            kwargs["api_base"] = self.api_base
+        if cfg.api_key:
+            kwargs["api_key"] = cfg.api_key
+        if cfg.api_base:
+            kwargs["api_base"] = cfg.api_base
 
         response = litellm.completion(**kwargs)
         model_response = cast(ModelResponse, response)
@@ -376,8 +427,12 @@ class LLMAcceptancePolicy(AcceptancePolicy, LLMComponentMixin):
     """
 
     # LLM configuration fields
-    provider: str = field()
-    model: str = field()
+    # Empty string means "not set" -> resolved from env/defaults in
+    # __attrs_post_init__. Typed as str (not str | None) so the mixin's
+    # str-typed helpers (get_model_string, _call_llm) stay type-correct.
+    provider: str = field(default="")
+    model: str = field(default="")
+    effort: str | None = field(default=None)
     api_key: str | None = field(default=None)
     api_base: str | None = field(default=None)
     temperature: float | None = field(default=None)
@@ -530,8 +585,12 @@ class LLMOfferingPolicy(OfferingPolicy, LLMComponentMixin):
     """
 
     # LLM configuration fields
-    provider: str = field()
-    model: str = field()
+    # Empty string means "not set" -> resolved from env/defaults in
+    # __attrs_post_init__. Typed as str (not str | None) so the mixin's
+    # str-typed helpers (get_model_string, _call_llm) stay type-correct.
+    provider: str = field(default="")
+    model: str = field(default="")
+    effort: str | None = field(default=None)
     api_key: str | None = field(default=None)
     api_base: str | None = field(default=None)
     temperature: float | None = field(default=None)
@@ -784,8 +843,12 @@ class LLMNegotiationSupporter(GBComponent, LLMComponentMixin):
     """
 
     # LLM configuration fields
-    provider: str = field()
-    model: str = field()
+    # Empty string means "not set" -> resolved from env/defaults in
+    # __attrs_post_init__. Typed as str (not str | None) so the mixin's
+    # str-typed helpers (get_model_string, _call_llm) stay type-correct.
+    provider: str = field(default="")
+    model: str = field(default="")
+    effort: str | None = field(default=None)
     api_key: str | None = field(default=None)
     api_base: str | None = field(default=None)
     temperature: float | None = field(default=None)
@@ -971,8 +1034,12 @@ class LLMValidator(GBComponent, LLMComponentMixin):
     """
 
     # LLM configuration fields
-    provider: str = field()
-    model: str = field()
+    # Empty string means "not set" -> resolved from env/defaults in
+    # __attrs_post_init__. Typed as str (not str | None) so the mixin's
+    # str-typed helpers (get_model_string, _call_llm) stay type-correct.
+    provider: str = field(default="")
+    model: str = field(default="")
+    effort: str | None = field(default=None)
     api_key: str | None = field(default=None)
     api_base: str | None = field(default=None)
     temperature: float | None = field(default=None)
@@ -1147,24 +1214,28 @@ class LLMValidator(GBComponent, LLMComponentMixin):
 class OpenAIAcceptancePolicy(LLMAcceptancePolicy):
     """LLM Acceptance Policy using OpenAI models."""
 
-    provider: str = field(default="openai", init=False)
-    model: str = field(default="gpt-4o")
+    DEFAULT_PROVIDER = "openai"
+    DEFAULT_MODEL = "gpt-4o"
+    LOCK_PROVIDER = True
 
 
 @define
 class OpenAIOfferingPolicy(LLMOfferingPolicy):
     """LLM Offering Policy using OpenAI models."""
 
-    provider: str = field(default="openai", init=False)
-    model: str = field(default="gpt-4o")
+    DEFAULT_PROVIDER = "openai"
+    DEFAULT_MODEL = "gpt-4o"
+    LOCK_PROVIDER = True
 
 
 @define
 class OllamaAcceptancePolicy(LLMAcceptancePolicy):
     """LLM Acceptance Policy using Ollama for local inference."""
 
-    provider: str = field(default="ollama", init=False)
-    model: str = field(default="llama3.2")
+    DEFAULT_PROVIDER = "ollama"
+    DEFAULT_MODEL = "llama3.2"
+    LOCK_PROVIDER = True
+
     api_base: str | None = field(default="http://localhost:11434")
 
 
@@ -1172,8 +1243,10 @@ class OllamaAcceptancePolicy(LLMAcceptancePolicy):
 class OllamaOfferingPolicy(LLMOfferingPolicy):
     """LLM Offering Policy using Ollama for local inference."""
 
-    provider: str = field(default="ollama", init=False)
-    model: str = field(default="llama3.2")
+    DEFAULT_PROVIDER = "ollama"
+    DEFAULT_MODEL = "llama3.2"
+    LOCK_PROVIDER = True
+
     api_base: str | None = field(default="http://localhost:11434")
 
 
@@ -1181,13 +1254,15 @@ class OllamaOfferingPolicy(LLMOfferingPolicy):
 class AnthropicAcceptancePolicy(LLMAcceptancePolicy):
     """LLM Acceptance Policy using Anthropic Claude models."""
 
-    provider: str = field(default="anthropic", init=False)
-    model: str = field(default="claude-sonnet-4-20250514")
+    DEFAULT_PROVIDER = "anthropic"
+    DEFAULT_MODEL = "claude-sonnet-4-20250514"
+    LOCK_PROVIDER = True
 
 
 @define
 class AnthropicOfferingPolicy(LLMOfferingPolicy):
     """LLM Offering Policy using Anthropic Claude models."""
 
-    provider: str = field(default="anthropic", init=False)
-    model: str = field(default="claude-sonnet-4-20250514")
+    DEFAULT_PROVIDER = "anthropic"
+    DEFAULT_MODEL = "claude-sonnet-4-20250514"
+    LOCK_PROVIDER = True

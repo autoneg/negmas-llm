@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import textwrap
 import time
@@ -22,9 +21,15 @@ from rich.table import Table
 
 from negmas_llm.common import (
     DEFAULT_MODELS,
+    apply_effort,
     apply_max_tokens,
     apply_temperature,
     litellm_model_string,
+)
+from negmas_llm.config import (
+    DEFAULT_PROVIDER,
+    effective_llm_config,
+    resolve_llm_config,
 )
 from negmas_llm.tags import process_prompt
 
@@ -98,12 +103,20 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
     capabilities, enabling human-like communication without changing the
     underlying negotiation logic.
 
+    Provider, model, and the other LLM settings are resolved in one place (see
+    ``negmas_llm.config``): an explicit argument wins, otherwise the value comes
+    from ``NEGMAS_LLM_<ClassName>_<VAR>`` (per negotiator type), then
+    ``NEGMAS_LLM_<VAR>`` (global), then the built-in default. See
+    ``docs/guide/environment-variables.md``.
+
     Args:
         base_negotiator: The negotiator that handles the core negotiation logic.
             This negotiator's propose/respond methods determine the actual offers
             and acceptance decisions.
         provider: The LLM provider (e.g., "openai", "anthropic", "ollama").
-        model: The model name (e.g., "gpt-4", "claude-3-opus").
+            None (default) resolves from the environment/defaults.
+        model: The model name (e.g., "gpt-4", "claude-3-opus"). None (default)
+            resolves from the environment/defaults.
         api_key: API key for the provider (if required).
         api_base: Base URL for the API (useful for local deployments).
         temperature: Sampling temperature for the LLM. None (default) selects
@@ -139,12 +152,22 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
             for meta-negotiators in SAO protocols.
     """
 
+    #: Built-in fallback provider for this class (see negmas_llm.config). The
+    #: strategy subclasses are provider-agnostic, so this defaults to None and
+    #: resolves to the global default provider ("ollama").
+    DEFAULT_PROVIDER: str | None = None
+    #: Built-in fallback model. None defers to the per-provider default table.
+    DEFAULT_MODEL: str | None = None
+    #: When True the global NEGMAS_LLM_PROVIDER is ignored for this class.
+    LOCK_PROVIDER: bool = False
+
     def __init__(
         self,
         base_negotiator: SAONegotiator,
-        provider: str,
-        model: str,
+        provider: str | None = None,
+        model: str | None = None,
         *,
+        effort: str | None = None,
         api_key: str | None = None,
         api_base: str | None = None,
         temperature: float | None = None,
@@ -164,26 +187,33 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
             share_nmi=True,
             **kwargs,
         )
-        self.provider = provider
-        self.model = model
-        self.api_key = api_key
-        self.api_base = api_base
-        self.temperature = temperature
-        self.max_tokens = max_tokens
-        # Timeout: use provided value, or fall back to NEGMAS_LLM_TIMEOUT env var
-        self.timeout: float | int | None
-        if timeout is not None:
-            self.timeout = timeout
-        else:
-            env_timeout = os.environ.get("NEGMAS_LLM_TIMEOUT")
-            self.timeout = float(env_timeout) if env_timeout else None
-        # Num retries: use provided value, or fall back to env var
-        self.num_retries: int | None
-        if num_retries is not None:
-            self.num_retries = num_retries
-        else:
-            env_retries = os.environ.get("NEGMAS_LLM_NUM_RETRIES")
-            self.num_retries = int(env_retries) if env_retries else None
+        # Single source of truth: resolve provider/model/etc. from explicit
+        # arguments, per-type and global environment variables, and this class's
+        # built-in fallbacks. See negmas_llm.config for the precedence rules.
+        resolved = resolve_llm_config(
+            type(self).__name__,
+            provider=provider,
+            model=model,
+            effort=effort,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            num_retries=num_retries,
+            default_provider=self.DEFAULT_PROVIDER or DEFAULT_PROVIDER,
+            default_model=self.DEFAULT_MODEL,
+            lock_provider=self.LOCK_PROVIDER,
+        )
+        self.provider = resolved.provider
+        self.model = resolved.model
+        self.effort = resolved.effort
+        self.api_key = resolved.api_key
+        self.api_base = resolved.api_base
+        self.temperature = resolved.temperature
+        self.max_tokens = resolved.max_tokens
+        self.timeout: float | int | None = resolved.timeout
+        self.num_retries: int | None = resolved.num_retries
         self.verbose = verbose
         self._custom_system_prompt = system_prompt
         self.llm_kwargs = llm_kwargs or {}
@@ -387,6 +417,7 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         messages: list[dict[str, str]],
         state: SAOState | None = None,
         max_tokens: int | None = None,
+        model_type: str | None = None,
     ) -> str:
         """Call the LLM and get a response.
 
@@ -394,8 +425,12 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
             messages: The conversation messages.
             state: The current negotiation state (for tag processing).
             max_tokens: Per-call override for the output token cap. If None,
-                uses ``self.max_tokens``. A provider-specific alias in
+                uses the resolved max tokens. A provider-specific alias in
                 ``self.llm_kwargs`` always takes precedence.
+            model_type: Optional model type/tier (e.g. ``"fast"``) to use for
+                this call; re-resolves provider/model/effort/etc. from the
+                ``NEGMAS_LLM_<...>_<VAR>_<TYPE>`` variables. When None, the
+                negotiator's own construction-time settings are used.
 
         Returns:
             The LLM response text.
@@ -406,29 +441,31 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
             processed_content = process_prompt(msg["content"], self, state)
             processed_messages.append({**msg, "content": processed_content})
 
+        cfg = effective_llm_config(self, model_type)
         kwargs: dict[str, Any] = {
-            "model": self.get_model_string(),
+            "model": litellm_model_string(cfg.provider, cfg.model),
             "messages": processed_messages,
             **self.llm_kwargs,
         }
         # Model-dependent parameters: explicit values win; None resolves a
         # model-appropriate default. llm_kwargs aliases take precedence.
-        apply_temperature(kwargs, self.provider, self.model, self.temperature)
+        apply_temperature(kwargs, cfg.provider, cfg.model, cfg.temperature)
         apply_max_tokens(
             kwargs,
-            self.provider,
-            self.model,
-            max_tokens if max_tokens is not None else self.max_tokens,
+            cfg.provider,
+            cfg.model,
+            max_tokens if max_tokens is not None else cfg.max_tokens,
         )
+        apply_effort(kwargs, cfg.effort)
 
-        if self.api_key:
-            kwargs["api_key"] = self.api_key
-        if self.api_base:
-            kwargs["api_base"] = self.api_base
-        if self.timeout is not None:
-            kwargs["timeout"] = self.timeout
-        if self.num_retries is not None:
-            kwargs["num_retries"] = self.num_retries
+        if cfg.api_key:
+            kwargs["api_key"] = cfg.api_key
+        if cfg.api_base:
+            kwargs["api_base"] = cfg.api_base
+        if cfg.timeout is not None:
+            kwargs["timeout"] = cfg.timeout
+        if cfg.num_retries is not None:
+            kwargs["num_retries"] = cfg.num_retries
 
         # Print prompt if verbose mode is enabled (using rich)
         console = Console() if self.verbose else None
@@ -437,7 +474,7 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
             # Create a table for the prompt header
             header = Table.grid(padding=(0, 1))
             header.add_column(style="bold cyan")
-            header.add_row(f"LLM PROMPT ({self.provider}/{self.model})")
+            header.add_row(f"LLM PROMPT ({cfg.provider}/{cfg.model})")
             console.print(Panel(header, style="cyan"))
 
             for msg in processed_messages:
@@ -463,7 +500,7 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
             header.add_column(style="bold green")
             header.add_column(justify="right", style="bold yellow")
             header.add_row(
-                f"LLM RESPONSE ({self.provider}/{self.model})",
+                f"LLM RESPONSE ({cfg.provider}/{cfg.model})",
                 f"[{elapsed_time:.2f}s]",
             )
             console.print(Panel(header, style="green"))
@@ -610,8 +647,8 @@ class LLMAspirationNegotiator(LLMMetaNegotiator):
 
     def __init__(
         self,
-        provider: str = "ollama",
-        model: str = DEFAULT_OLLAMA_MODEL,
+        provider: str | None = None,
+        model: str | None = None,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -664,8 +701,8 @@ class LLMBoulwareTBNegotiator(LLMMetaNegotiator):
 
     def __init__(
         self,
-        provider: str = "ollama",
-        model: str = DEFAULT_OLLAMA_MODEL,
+        provider: str | None = None,
+        model: str | None = None,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -718,8 +755,8 @@ class LLMConcederTBNegotiator(LLMMetaNegotiator):
 
     def __init__(
         self,
-        provider: str = "ollama",
-        model: str = DEFAULT_OLLAMA_MODEL,
+        provider: str | None = None,
+        model: str | None = None,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -771,8 +808,8 @@ class LLMLinearTBNegotiator(LLMMetaNegotiator):
 
     def __init__(
         self,
-        provider: str = "ollama",
-        model: str = DEFAULT_OLLAMA_MODEL,
+        provider: str | None = None,
+        model: str | None = None,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -824,8 +861,8 @@ class LLMTimeBasedConcedingNegotiator(LLMMetaNegotiator):
 
     def __init__(
         self,
-        provider: str = "ollama",
-        model: str = DEFAULT_OLLAMA_MODEL,
+        provider: str | None = None,
+        model: str | None = None,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -877,8 +914,8 @@ class LLMTimeBasedNegotiator(LLMMetaNegotiator):
 
     def __init__(
         self,
-        provider: str = "ollama",
-        model: str = DEFAULT_OLLAMA_MODEL,
+        provider: str | None = None,
+        model: str | None = None,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -930,8 +967,8 @@ class LLMNiceNegotiator(LLMMetaNegotiator):
 
     def __init__(
         self,
-        provider: str = "ollama",
-        model: str = DEFAULT_OLLAMA_MODEL,
+        provider: str | None = None,
+        model: str | None = None,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -982,8 +1019,8 @@ class LLMToughNegotiator(LLMMetaNegotiator):
 
     def __init__(
         self,
-        provider: str = "ollama",
-        model: str = DEFAULT_OLLAMA_MODEL,
+        provider: str | None = None,
+        model: str | None = None,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1035,8 +1072,8 @@ class LLMNaiveTitForTatNegotiator(LLMMetaNegotiator):
 
     def __init__(
         self,
-        provider: str = "ollama",
-        model: str = DEFAULT_OLLAMA_MODEL,
+        provider: str | None = None,
+        model: str | None = None,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1088,8 +1125,8 @@ class LLMRandomNegotiator(LLMMetaNegotiator):
 
     def __init__(
         self,
-        provider: str = "ollama",
-        model: str = DEFAULT_OLLAMA_MODEL,
+        provider: str | None = None,
+        model: str | None = None,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1141,8 +1178,8 @@ class LLMRandomAlwaysAcceptingNegotiator(LLMMetaNegotiator):
 
     def __init__(
         self,
-        provider: str = "ollama",
-        model: str = DEFAULT_OLLAMA_MODEL,
+        provider: str | None = None,
+        model: str | None = None,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1193,8 +1230,8 @@ class LLMCABNegotiator(LLMMetaNegotiator):
 
     def __init__(
         self,
-        provider: str = "ollama",
-        model: str = DEFAULT_OLLAMA_MODEL,
+        provider: str | None = None,
+        model: str | None = None,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1245,8 +1282,8 @@ class LLMCANNegotiator(LLMMetaNegotiator):
 
     def __init__(
         self,
-        provider: str = "ollama",
-        model: str = DEFAULT_OLLAMA_MODEL,
+        provider: str | None = None,
+        model: str | None = None,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1297,8 +1334,8 @@ class LLMCARNegotiator(LLMMetaNegotiator):
 
     def __init__(
         self,
-        provider: str = "ollama",
-        model: str = DEFAULT_OLLAMA_MODEL,
+        provider: str | None = None,
+        model: str | None = None,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1349,8 +1386,8 @@ class LLMMiCRONegotiator(LLMMetaNegotiator):
 
     def __init__(
         self,
-        provider: str = "ollama",
-        model: str = DEFAULT_OLLAMA_MODEL,
+        provider: str | None = None,
+        model: str | None = None,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1401,8 +1438,8 @@ class LLMFastMiCRONegotiator(LLMMetaNegotiator):
 
     def __init__(
         self,
-        provider: str = "ollama",
-        model: str = DEFAULT_OLLAMA_MODEL,
+        provider: str | None = None,
+        model: str | None = None,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1453,8 +1490,8 @@ class LLMUtilBasedNegotiator(LLMMetaNegotiator):
 
     def __init__(
         self,
-        provider: str = "ollama",
-        model: str = DEFAULT_OLLAMA_MODEL,
+        provider: str | None = None,
+        model: str | None = None,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1505,8 +1542,8 @@ class LLMWARNegotiator(LLMMetaNegotiator):
 
     def __init__(
         self,
-        provider: str = "ollama",
-        model: str = DEFAULT_OLLAMA_MODEL,
+        provider: str | None = None,
+        model: str | None = None,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1557,8 +1594,8 @@ class LLMWANNegotiator(LLMMetaNegotiator):
 
     def __init__(
         self,
-        provider: str = "ollama",
-        model: str = DEFAULT_OLLAMA_MODEL,
+        provider: str | None = None,
+        model: str | None = None,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1609,8 +1646,8 @@ class LLMWABNegotiator(LLMMetaNegotiator):
 
     def __init__(
         self,
-        provider: str = "ollama",
-        model: str = DEFAULT_OLLAMA_MODEL,
+        provider: str | None = None,
+        model: str | None = None,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1661,8 +1698,8 @@ class LLMLimitedOutcomesNegotiator(LLMMetaNegotiator):
 
     def __init__(
         self,
-        provider: str = "ollama",
-        model: str = DEFAULT_OLLAMA_MODEL,
+        provider: str | None = None,
+        model: str | None = None,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1713,8 +1750,8 @@ class LLMLimitedOutcomesAcceptor(LLMMetaNegotiator):
 
     def __init__(
         self,
-        provider: str = "ollama",
-        model: str = DEFAULT_OLLAMA_MODEL,
+        provider: str | None = None,
+        model: str | None = None,
         *,
         api_key: str | None = None,
         api_base: str | None = None,
@@ -1767,8 +1804,8 @@ class LLMHybridNegotiator(LLMMetaNegotiator):
 
     def __init__(
         self,
-        provider: str = "ollama",
-        model: str = DEFAULT_OLLAMA_MODEL,
+        provider: str | None = None,
+        model: str | None = None,
         *,
         api_key: str | None = None,
         api_base: str | None = None,

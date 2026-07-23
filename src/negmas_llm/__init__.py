@@ -2,6 +2,10 @@
 
 from negmas.registry import component_registry, negotiator_registry
 
+from negmas_llm.common import (
+    DEFAULT_MODELS,
+    default_model_for_provider,
+)
 from negmas_llm.components import (
     # Provider-specific convenience classes
     AnthropicAcceptancePolicy,
@@ -16,6 +20,13 @@ from negmas_llm.components import (
     OllamaOfferingPolicy,
     OpenAIAcceptancePolicy,
     OpenAIOfferingPolicy,
+)
+from negmas_llm.config import (
+    DEFAULT_PROVIDER,
+    ResolvedLLMConfig,
+    effective_llm_config,
+    per_type_env_var,
+    resolve_llm_config,
 )
 from negmas_llm.meta import (
     LLMAspirationNegotiator,
@@ -477,6 +488,14 @@ component_registry.register(
 )
 
 __all__ = [
+    # LLM provider/model configuration (single source of truth)
+    "resolve_llm_config",
+    "effective_llm_config",
+    "ResolvedLLMConfig",
+    "per_type_env_var",
+    "DEFAULT_PROVIDER",
+    "DEFAULT_MODELS",
+    "default_model_for_provider",
     # Base negotiator class
     "LLMNegotiator",
     # Meta negotiator
