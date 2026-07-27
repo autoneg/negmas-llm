@@ -31,7 +31,9 @@ from negmas_llm.common import (
     apply_max_tokens,
     apply_temperature,
     litellm_model_string,
+    resolve_max_words,
     resolve_ollama_api_base,
+    word_limit_instruction,
 )
 from negmas_llm.config import (
     DEFAULT_PROVIDER,
@@ -407,6 +409,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         api_base: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        max_words: int | None = None,
         timeout: float | int | None = None,
         num_retries: int | None = None,
         use_structured_output: bool = True,
@@ -452,6 +455,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             api_base=api_base,
             temperature=temperature,
             max_tokens=max_tokens,
+            max_words=max_words,
             timeout=timeout,
             num_retries=num_retries,
             default_provider=self.DEFAULT_PROVIDER or DEFAULT_PROVIDER,
@@ -465,6 +469,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         self.api_base = resolved.api_base
         self.temperature = resolved.temperature
         self.max_tokens = resolved.max_tokens
+        self.max_words = resolve_max_words(resolved.max_words)
         self.timeout: float | int | None = resolved.timeout
         self.num_retries: int | None = resolved.num_retries
         self.use_structured_output = use_structured_output
@@ -749,8 +754,10 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         Returns:
             The LLM response text.
         """
-        # Build messages: system prompt + conversation history + new message
-        messages = [{"role": "system", "content": self._system_prompt}]
+        # Build messages: system prompt + conversation history + new message.
+        # The word budget is appended here rather than stored, so a custom
+        # ``system_prompt`` stays verbatim on the attribute.
+        messages = [{"role": "system", "content": self._system_prompt_for_call()}]
 
         messages.extend(self._conversation_history)
         messages.append({"role": role, "content": message})
@@ -764,6 +771,15 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         self._conversation_history.append({"role": "assistant", "content": response})
 
         return response
+
+    def _system_prompt_for_call(self) -> str:
+        """The system prompt actually sent, with the word budget appended.
+
+        Bounding the answer by instruction keeps the token budget free for
+        hidden reasoning; see :func:`negmas_llm.common.word_limit_instruction`.
+        """
+        limit = word_limit_instruction(self.max_words)
+        return f"{self._system_prompt}\n{limit}\n" if limit else self._system_prompt
 
     def _build_base_system_prompt(self) -> str:
         """Build the base system prompt that sets up the LLM as a negotiator.

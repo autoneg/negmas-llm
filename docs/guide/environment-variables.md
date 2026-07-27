@@ -26,8 +26,10 @@ the built-in fallbacks live as the class attributes `DEFAULT_PROVIDER` /
 | **Per provider (model only)** | `NEGMAS_LLM_<PROVIDER>_DEFAULT_MODEL` | The default model used *whenever that provider is selected*, regardless of negotiator type. |
 
 `<VAR>` is one of: `PROVIDER`, `MODEL`, `EFFORT`, `TEMPERATURE`, `MAX_TOKENS`,
-`TIMEOUT`, `NUM_RETRIES`, `API_KEY`, `API_BASE`. (`EFFORT` is the reasoning
-effort — e.g. `low`/`medium`/`high` — sent verbatim as `reasoning_effort`.)
+`MAX_WORDS`, `TIMEOUT`, `NUM_RETRIES`, `API_KEY`, `API_BASE`. (`EFFORT` is the
+reasoning effort — e.g. `low`/`medium`/`high` — sent verbatim as
+`reasoning_effort`; `MAX_WORDS` bounds how long the *message* is, `MAX_TOKENS`
+bounds total spend — see the note below on which one you want.)
 
 `<ClassName>` is the **exact** concrete class name of the negotiator, e.g.
 `LLMBoulwareTBNegotiator`, `OpenAINegotiator`, or the component class
@@ -112,11 +114,11 @@ default model rather than `gpt-4o`.
 
 ### Overriding other parameters per type
 
-The same scheme works for the other knobs. For example, give one negotiator a
-larger token budget and a longer timeout while leaving the rest alone:
+The same scheme works for the other knobs. For example, make one negotiator
+terser and give it a longer timeout while leaving the rest alone:
 
 ```bash
-export NEGMAS_LLM_LLMBoulwareTBNegotiator_MAX_TOKENS=8192
+export NEGMAS_LLM_LLMBoulwareTBNegotiator_MAX_WORDS=25
 export NEGMAS_LLM_LLMBoulwareTBNegotiator_TEMPERATURE=0.2
 export NEGMAS_LLM_LLMBoulwareTBNegotiator_TIMEOUT=120
 export NEGMAS_LLM_LLMBoulwareTBNegotiator_NUM_RETRIES=3
@@ -322,17 +324,33 @@ defaults for all LLM calls. Each of these also supports the per-type form
 |---------------------|-------------|---------|
 | `NEGMAS_LLM_TIMEOUT` | Timeout in seconds for LLM calls | None (no timeout) |
 | `NEGMAS_LLM_NUM_RETRIES` | Number of retries for failed LLM calls | None (no retries) |
-| `NEGMAS_LLM_MAX_TOKENS` | Output-token budget for every model (alias: `NEGMAS_LLM_DEFAULT_MAX_TOKENS`) | model-dependent |
+| `NEGMAS_LLM_MAX_WORDS` | Approximate length of the generated message, in words | `60` (`0` = no limit) |
+| `NEGMAS_LLM_MAX_TOKENS` | Hard ceiling on total tokens the model may spend (alias: `NEGMAS_LLM_DEFAULT_MAX_TOKENS`) | None (no cap) |
 | `NEGMAS_LLM_TEMPERATURE` | Sampling temperature for every model (alias: `NEGMAS_LLM_DEFAULT_TEMPERATURE`) | `0.7` (omitted for models that reject it) |
 | `NEGMAS_LLM_EFFORT` | Reasoning effort sent verbatim as `reasoning_effort` (e.g. `low`/`medium`/`high`) | None (omitted) |
 
-!!! note "Model-dependent token/temperature defaults"
-    When `max_tokens`/`temperature` are left unset, `negmas-llm` picks a
-    model-appropriate value at call time: reasoning/thinking models get a larger
-    token budget so hidden deliberation cannot starve the visible response, and
-    OpenAI reasoning models (o-series, gpt-5) omit `temperature` entirely because
-    they reject non-default values. `NEGMAS_LLM_MAX_TOKENS` /
-    `NEGMAS_LLM_TEMPERATURE` override this for every model.
+!!! warning "Use `MAX_WORDS` to shorten answers, not `MAX_TOKENS`"
+    These bound two different things.
+
+    - **`MAX_WORDS` bounds the answer.** It is stated in the prompt ("keep the
+      message under about N words"), which is a constraint a model can actually
+      comply with. This is the knob you want when a negotiation message is too
+      long.
+    - **`MAX_TOKENS` bounds total spend.** Reasoning ("thinking") models emit
+      hidden deliberation that most providers charge against the *same* output
+      budget as the visible content. Setting a small `MAX_TOKENS` to shorten
+      answers therefore backfires: the model spends the whole budget thinking and
+      returns **empty content**, so the negotiator sees no message and no offer.
+
+    Because of that, `max_tokens` defaults to **no cap at all** — the parameter
+    is not sent and the model/provider decides. Set it only when you deliberately
+    want a spend ceiling, and make it generous enough for hidden reasoning *plus*
+    the answer.
+
+!!! note "Model-dependent temperature default"
+    When `temperature` is left unset, OpenAI reasoning models (o-series, gpt-5)
+    omit it entirely because they reject non-default values; every other model
+    gets `0.7`. `NEGMAS_LLM_TEMPERATURE` overrides this for every model.
 
 ### Example Usage
 

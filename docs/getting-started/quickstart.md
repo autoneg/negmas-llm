@@ -92,7 +92,9 @@ negotiator = OpenAINegotiator(
     name="negotiator",
     ufun=my_ufun,
     temperature=0.5,  # Lower = more deterministic
-    max_tokens=2048,  # Response length limit
+    max_words=60,  # Length of the generated message (what you usually want)
+    # max_tokens=8192,  # Optional hard spend ceiling; unset means no cap, so
+    #                   # a reasoning model is never cut off mid-thought
     llm_kwargs={  # Additional litellm parameters
         "top_p": 0.9,
     },

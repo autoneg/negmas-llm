@@ -25,6 +25,8 @@ from negmas_llm.common import (
     apply_max_tokens,
     apply_temperature,
     litellm_model_string,
+    resolve_max_words,
+    word_limit_instruction,
 )
 from negmas_llm.config import (
     DEFAULT_PROVIDER,
@@ -121,9 +123,12 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         api_base: Base URL for the API (useful for local deployments).
         temperature: Sampling temperature for the LLM. None (default) selects
             a model-appropriate value.
-        max_tokens: Maximum tokens in the LLM response. None (default) selects
-            a model-appropriate budget (larger for reasoning/thinking models so
-            hidden deliberation cannot starve the visible response).
+        max_tokens: Hard ceiling on tokens the model may spend. None (default)
+            sends no cap at all, so hidden reasoning can never starve the
+            visible response. Use ``max_words`` to bound answer length.
+        max_words: Approximate word budget for the generated message, stated in
+            the prompt. None (default) uses
+            :data:`negmas_llm.common.DEFAULT_MAX_WORDS`; 0 removes the limit.
         verbose: If True, print LLM prompts and responses to stdout. Useful for
             debugging and understanding the LLM's text generation process.
             Default is False.
@@ -172,6 +177,7 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         api_base: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        max_words: int | None = None,
         timeout: float | int | None = None,
         num_retries: int | None = None,
         verbose: bool = False,
@@ -199,6 +205,7 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
             api_base=api_base,
             temperature=temperature,
             max_tokens=max_tokens,
+            max_words=max_words,
             timeout=timeout,
             num_retries=num_retries,
             default_provider=self.DEFAULT_PROVIDER or DEFAULT_PROVIDER,
@@ -212,6 +219,7 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         self.api_base = resolved.api_base
         self.temperature = resolved.temperature
         self.max_tokens = resolved.max_tokens
+        self.max_words = resolve_max_words(resolved.max_words)
         self.timeout: float | int | None = resolved.timeout
         self.num_retries: int | None = resolved.num_retries
         self.verbose = verbose
@@ -343,13 +351,14 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
     def _build_system_prompt(self) -> str:
         """Build the system prompt for text generation.
 
+        The configured word budget (``max_words``) is appended as an explicit
+        instruction, since bounding the *answer* is what callers want; the token
+        budget is left open so reasoning models are not cut off mid-thought.
+
         Returns:
             The system prompt string.
         """
-        if self._custom_system_prompt:
-            return self._custom_system_prompt
-
-        return _dedent("""
+        prompt = self._custom_system_prompt or _dedent("""
             You generate concise, persuasive text to accompany negotiation actions.
 
             Guidelines:
@@ -362,6 +371,8 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
                 "text": "your message"
             }
             """)
+        limit = word_limit_instruction(self.max_words)
+        return f"{prompt}\n{limit}\n" if limit else prompt
 
     def _build_user_message(
         self,

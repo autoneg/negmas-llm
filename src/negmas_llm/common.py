@@ -109,21 +109,30 @@ def default_model_for_provider(provider: str) -> str:
 # Model-dependent parameter defaults
 # =============================================================================
 #
-# Reasoning ("thinking") models generate hidden deliberation tokens before the
-# visible answer, and most providers count them against the SAME output budget
-# as the content. With the historical default of max_tokens=1024, a reasoning
-# model can burn the whole budget thinking and return EMPTY content — the
-# negotiator then sees no offer and no text. Non-reasoning instruct models put
-# all 1024 tokens into visible output, which is why the old default worked for
-# them. The constructors therefore accept ``None`` for the model-dependent
-# parameters and resolve an appropriate value per model here.
+# HOW RESPONSE LENGTH IS CONTROLLED
+#
+# There are two different things one might want to bound, and conflating them
+# breaks reasoning models:
+#
+# 1. **How long the visible answer is.** This is what callers actually care
+#    about — a negotiation message should be a couple of sentences, not an
+#    essay. It is bounded by *instruction* (a word budget stated in the prompt),
+#    which is what an LLM can actually comply with.
+# 2. **How many tokens the model may spend in total.** Reasoning ("thinking")
+#    models emit hidden deliberation that most providers charge against the SAME
+#    output budget as the content. Capping that budget to bound answer length is
+#    a category error: the model spends the cap on thinking and returns EMPTY
+#    content, so the caller sees no message and no offer at all.
+#
+# Therefore the default token budget is **open** — no cap is sent, and the model
+# or provider decides — while visible length is bounded by ``DEFAULT_MAX_WORDS``
+# through the prompt. Set ``max_tokens`` (or ``NEGMAS_LLM_MAX_TOKENS``) only when
+# you deliberately want a hard spend ceiling, and then make it generous enough
+# for hidden reasoning on top of the answer.
 
-# Visible-output budget for classic instruct models (the old fixed default).
-DEFAULT_MAX_TOKENS = 1024
-# Budget for reasoning models: large enough that hidden thinking (typically a
-# few hundred to a few thousand tokens on negotiation-sized prompts) cannot
-# starve the visible JSON response.
-DEFAULT_MAX_TOKENS_REASONING = 8192
+#: Approximate visible-answer budget, in words, stated in the prompt. This is
+#: the knob that actually shapes response length. ``None`` states no limit.
+DEFAULT_MAX_WORDS: int | None = 60
 DEFAULT_TEMPERATURE = 0.7
 
 # Model-name prefixes (provider prefix stripped, lowercased) of families that
@@ -132,6 +141,11 @@ DEFAULT_TEMPERATURE = 0.7
 # "nemotron-3-nano:30b") are covered. Verified empirically on Ollama Cloud
 # 2026-07 (models returning a reasoning/thinking field): deepseek-v4-*,
 # qwen3.5, glm-5.x, kimi-k2.5+, minimax-m2.x/m3, nemotron-3-*, gpt-oss.
+#
+# This list no longer drives any token budget (the budget is open by default);
+# it is kept because knowing whether a model thinks is useful to callers and to
+# diagnostics.
+
 _REASONING_MODEL_PREFIXES: tuple[str, ...] = (
     # OpenAI
     "o1",
@@ -184,22 +198,57 @@ def is_reasoning_model(model: str) -> bool:
     return "think" in m or "reason" in m
 
 
-def default_max_tokens(provider: str, model: str) -> int:
-    """Model-appropriate output-token budget.
+def default_max_tokens(provider: str, model: str) -> int | None:
+    """The default output-token budget, which is **open** (``None``).
+
+    No cap is sent unless one is asked for, so a reasoning model cannot spend
+    its whole budget thinking and return an empty answer. Bound the length of
+    the *answer* with ``max_words`` instead (see :data:`DEFAULT_MAX_WORDS`).
 
     ``NEGMAS_LLM_MAX_TOKENS`` (canonical) or ``NEGMAS_LLM_DEFAULT_MAX_TOKENS``
-    (legacy alias) overrides for every model when set.
+    (legacy alias) sets an explicit ceiling for every model when you do want one.
     """
     env = os.environ.get("NEGMAS_LLM_MAX_TOKENS") or os.environ.get(
         "NEGMAS_LLM_DEFAULT_MAX_TOKENS"
     )
-    if env:
-        return int(env)
+    return int(env) if env else None
+
+
+def default_max_words() -> int | None:
+    """Approximate visible-answer budget in words, or ``None`` for no limit.
+
+    ``NEGMAS_LLM_MAX_WORDS`` overrides :data:`DEFAULT_MAX_WORDS`; set it to
+    ``0`` or an empty value to remove the limit entirely.
+    """
+    env = os.environ.get("NEGMAS_LLM_MAX_WORDS")
+    if env is None:
+        return DEFAULT_MAX_WORDS
+    env = env.strip()
+    if not env or env == "0":
+        return None
+    return int(env)
+
+
+def word_limit_instruction(max_words: int | None) -> str:
+    """A one-line prompt instruction bounding the answer, or ``""`` if unbounded.
+
+    Args:
+        max_words: The approximate word budget for the visible answer.
+
+    Returns:
+        The instruction to append to a system prompt, or an empty string.
+    """
+    if not max_words or max_words <= 0:
+        return ""
     return (
-        DEFAULT_MAX_TOKENS_REASONING
-        if is_reasoning_model(model)
-        else DEFAULT_MAX_TOKENS
+        f"Keep the message you send to the other party under about {max_words} "
+        "words. Think for as long as you need to, but answer briefly."
     )
+
+
+def resolve_max_words(value: int | None) -> int | None:
+    """The explicit ``value`` if given, else the configured default."""
+    return value if value is not None else default_max_words()
 
 
 def default_temperature(provider: str, model: str) -> float | None:
@@ -220,8 +269,8 @@ def default_temperature(provider: str, model: str) -> float | None:
     return DEFAULT_TEMPERATURE
 
 
-def resolve_max_tokens(provider: str, model: str, value: int | None) -> int:
-    """The explicit ``value`` if given, else the model-appropriate default."""
+def resolve_max_tokens(provider: str, model: str, value: int | None) -> int | None:
+    """The explicit ``value`` if given, else the default (``None`` = no cap)."""
     return value if value is not None else default_max_tokens(provider, model)
 
 
@@ -345,12 +394,16 @@ def apply_max_tokens(
 
     Skips injection if the user already supplied any known token-limit alias
     (e.g., passed `num_predict` directly in `llm_kwargs`) — that override wins.
-    ``max_tokens=None`` resolves the model-appropriate default (see
-    ``default_max_tokens``): reasoning models get a budget large enough that
-    hidden thinking cannot starve the visible response.
+
+    ``max_tokens=None`` resolves to the default, which is **no cap at all**: the
+    parameter is simply not sent and the model/provider decides. Capping tokens
+    to shorten answers starves reasoning models of the budget they spend on
+    hidden thinking, which makes them return empty content; bound the answer
+    with a word budget in the prompt instead (``word_limit_instruction``).
     """
     if any(alias in kwargs for alias in TOKEN_LIMIT_ALIASES):
         return
-    kwargs[max_tokens_param_name(provider, model)] = resolve_max_tokens(
-        provider, model, max_tokens
-    )
+    resolved = resolve_max_tokens(provider, model, max_tokens)
+    if resolved is None:
+        return
+    kwargs[max_tokens_param_name(provider, model)] = resolved

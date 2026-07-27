@@ -16,7 +16,8 @@ Three independent axes of environment configuration
    per-provider lookup for standalone use.)
 
 2. **Global defaults** — ``NEGMAS_LLM_PROVIDER``, ``NEGMAS_LLM_MODEL``,
-   ``NEGMAS_LLM_TEMPERATURE``, ``NEGMAS_LLM_MAX_TOKENS``, ``NEGMAS_LLM_TIMEOUT``,
+   ``NEGMAS_LLM_TEMPERATURE``, ``NEGMAS_LLM_MAX_TOKENS``,
+   ``NEGMAS_LLM_MAX_WORDS``, ``NEGMAS_LLM_TIMEOUT``,
    ``NEGMAS_LLM_NUM_RETRIES``, ``NEGMAS_LLM_API_KEY``, ``NEGMAS_LLM_API_BASE``.
    Apply to *every* negotiator that does not specify the value explicitly.
    This is the knob for "run the whole experiment on model X".
@@ -25,6 +26,7 @@ Three independent axes of environment configuration
    ``<ClassName>`` is the *exact* concrete class name of the negotiator (e.g.
    ``NEGMAS_LLM_LLMBoulwareTBNegotiator_MODEL``) and ``<VAR>`` is one of
    ``PROVIDER``, ``MODEL``, ``EFFORT``, ``TEMPERATURE``, ``MAX_TOKENS``,
+   ``MAX_WORDS``,
    ``TIMEOUT``, ``NUM_RETRIES``, ``API_KEY``, ``API_BASE``. Apply to *only that
    one class*. This is the knob for "everyone on model X, but this one
    negotiator on model Y from a different provider".
@@ -117,6 +119,7 @@ CONFIGURABLE_VARS: tuple[str, ...] = (
     "EFFORT",
     "TEMPERATURE",
     "MAX_TOKENS",
+    "MAX_WORDS",
     "TIMEOUT",
     "NUM_RETRIES",
     "API_KEY",
@@ -191,9 +194,11 @@ def _global_provider(mt: str | None) -> str:
 class ResolvedLLMConfig:
     """The fully-resolved LLM settings for one negotiator instance.
 
-    ``temperature`` and ``max_tokens`` remain ``None`` when neither an explicit
-    argument nor an environment override sets them, so the model-dependent
-    defaults in :mod:`negmas_llm.common` still apply at call time. ``effort`` is
+    ``temperature``, ``max_tokens`` and ``max_words`` remain ``None`` when
+    neither an explicit argument nor an environment override sets them, so the
+    defaults in :mod:`negmas_llm.common` still apply at call time. Note that the
+    default ``max_tokens`` is *no cap at all*; response length is bounded by
+    ``max_words`` in the prompt instead. ``effort`` is
     the reasoning effort (e.g. ``"low"``/``"medium"``/``"high"``) sent verbatim
     as ``reasoning_effort``; ``None`` omits it.
     """
@@ -204,6 +209,7 @@ class ResolvedLLMConfig:
     api_base: str | None
     temperature: float | None
     max_tokens: int | None
+    max_words: int | None
     timeout: float | int | None
     num_retries: int | None
     effort: str | None = None
@@ -282,6 +288,7 @@ def resolve_llm_config(
     api_base: str | None = None,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    max_words: int | None = None,
     timeout: float | int | None = None,
     num_retries: int | None = None,
     default_provider: str = DEFAULT_PROVIDER,
@@ -307,7 +314,9 @@ def resolve_llm_config(
         api_base: Explicit API base URL (``None`` to resolve).
         temperature: Explicit temperature (``None`` keeps model-dependent
             default at call time unless an env override is set).
-        max_tokens: Explicit max tokens (``None`` keeps model-dependent default
+        max_words: Explicit approximate word budget for the visible answer
+            (``None`` keeps the default; see :data:`negmas_llm.common.DEFAULT_MAX_WORDS`).
+        max_tokens: Explicit max tokens (``None`` means no cap is sent
             at call time unless an env override is set).
         timeout: Explicit timeout in seconds (``None`` to resolve).
         num_retries: Explicit retry count (``None`` to resolve).
@@ -349,6 +358,12 @@ def resolve_llm_config(
         if env_mt is not None:
             max_tokens_value = int(env_mt)
 
+    max_words_value = max_words
+    if max_words_value is None:
+        env_mw = _env_scoped(negotiator_type, "MAX_WORDS", mt)
+        if env_mw is not None:
+            max_words_value = int(env_mw) or None
+
     timeout_value = timeout
     if timeout_value is None:
         env_timeout = _env_scoped(negotiator_type, "TIMEOUT", mt)
@@ -368,6 +383,7 @@ def resolve_llm_config(
         api_base=api_base_value,
         temperature=temperature_value,
         max_tokens=max_tokens_value,
+        max_words=max_words_value,
         timeout=timeout_value,
         num_retries=num_retries_value,
         effort=effort_value,
@@ -402,6 +418,7 @@ def effective_llm_config(
             api_base=getattr(obj, "api_base", None),
             temperature=getattr(obj, "temperature", None),
             max_tokens=getattr(obj, "max_tokens", None),
+            max_words=getattr(obj, "max_words", None),
             timeout=getattr(obj, "timeout", None),
             num_retries=getattr(obj, "num_retries", None),
             effort=getattr(obj, "effort", None),
@@ -438,6 +455,9 @@ def effective_llm_config(
         max_tokens=tier.max_tokens
         if tier.max_tokens is not None
         else getattr(obj, "max_tokens", None),
+        max_words=tier.max_words
+        if tier.max_words is not None
+        else getattr(obj, "max_words", None),
         timeout=tier.timeout
         if tier.timeout is not None
         else getattr(obj, "timeout", None),

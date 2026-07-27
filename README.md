@@ -203,7 +203,7 @@ same experiment across different models. There are three configuration axes:
 | **Per negotiator type** | `NEGMAS_LLM_<ClassName>_<VAR>` | Only that one concrete class |
 | **Per provider (model)** | `NEGMAS_LLM_<PROVIDER>_DEFAULT_MODEL` | Any negotiator that ends up on that provider |
 
-`<VAR>` ∈ `PROVIDER`, `MODEL`, `EFFORT`, `TEMPERATURE`, `MAX_TOKENS`, `TIMEOUT`,
+`<VAR>` ∈ `PROVIDER`, `MODEL`, `EFFORT`, `TEMPERATURE`, `MAX_WORDS`, `MAX_TOKENS`, `TIMEOUT`,
 `NUM_RETRIES`, `API_KEY`, `API_BASE`. Precedence (highest first):
 
 ```
