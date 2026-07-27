@@ -351,14 +351,19 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
     def _build_system_prompt(self) -> str:
         """Build the system prompt for text generation.
 
-        The configured word budget (``max_words``) is appended as an explicit
-        instruction, since bounding the *answer* is what callers want; the token
-        budget is left open so reasoning models are not cut off mid-thought.
+        Returns the configured prompt verbatim — a custom ``system_prompt`` stays
+        untouched on the attribute. The word budget (``max_words``) is appended at
+        call time in :meth:`_generate_text`, so bounding the *answer* by
+        instruction is kept separate from this attribute; the token budget is left
+        open so reasoning models are not cut off mid-thought.
 
         Returns:
             The system prompt string.
         """
-        prompt = self._custom_system_prompt or _dedent("""
+        if self._custom_system_prompt:
+            return self._custom_system_prompt
+
+        return _dedent("""
             You generate concise, persuasive text to accompany negotiation actions.
 
             Guidelines:
@@ -371,8 +376,6 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
                 "text": "your message"
             }
             """)
-        limit = word_limit_instruction(self.max_words)
-        return f"{prompt}\n{limit}\n" if limit else prompt
 
     def _build_user_message(
         self,
@@ -576,6 +579,12 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
             The generated text message.
         """
         system_prompt = self._build_system_prompt()
+        # The word budget is appended here rather than stored, so a custom
+        # ``system_prompt`` stays verbatim on the attribute. Bounding the answer
+        # by instruction keeps the token budget free for hidden reasoning.
+        limit = word_limit_instruction(self.max_words)
+        if limit:
+            system_prompt = f"{system_prompt}\n{limit}\n"
         user_message = self._build_user_message(state, action, outcome, received_text)
 
         messages = [
