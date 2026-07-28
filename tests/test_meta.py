@@ -17,8 +17,30 @@ from negmas.sao import (
 from negmas_llm import LLMMetaNegotiator, is_meta_negotiator_available
 from negmas_llm.common import DEFAULT_MODELS
 
-# Use environment variable for model, defaulting to centralized default
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", DEFAULT_MODELS["ollama"])
+# LLM provider/model for the tests, configurable via environment variables.
+# These are the same ``TEST_LLM_*`` variables read by ``conftest.get_llm_config``,
+# so the whole suite shares one knob. Defaults to a local Ollama server so it
+# runs unchanged out of the box; point it at another backend by setting
+# ``TEST_LLM_PROVIDER`` / ``TEST_LLM_MODEL`` (and ``TEST_LLM_API_KEY`` /
+# ``TEST_LLM_API_BASE`` for cloud providers that need credentials), e.g. Ollama
+# Cloud:
+#
+#   TEST_LLM_PROVIDER=ollama TEST_LLM_MODEL=nemotron-3-nano:30b-cloud \
+#   TEST_LLM_API_KEY=... TEST_LLM_API_BASE=https://ollama.com
+TEST_PROVIDER = os.environ.get("TEST_LLM_PROVIDER", "ollama")
+TEST_MODEL = os.environ.get(
+    "TEST_LLM_MODEL", DEFAULT_MODELS.get(TEST_PROVIDER, DEFAULT_MODELS["ollama"])
+)
+TEST_API_KEY = os.environ.get("TEST_LLM_API_KEY")
+TEST_API_BASE = os.environ.get("TEST_LLM_API_BASE")
+
+# Extra constructor kwargs for cloud providers that need credentials. Empty
+# for unauthenticated local Ollama, so it spreads harmlessly into every call.
+TEST_LLM_EXTRA_KWARGS: dict[str, str] = {}
+if TEST_API_KEY:
+    TEST_LLM_EXTRA_KWARGS["api_key"] = TEST_API_KEY
+if TEST_API_BASE:
+    TEST_LLM_EXTRA_KWARGS["api_base"] = TEST_API_BASE
 
 
 class TestMetaNegotiatorAvailability:
@@ -39,7 +61,7 @@ class TestMetaNegotiatorAvailability:
             base = BoulwareTBNegotiator()
             LLMMetaNegotiator(
                 base_negotiator=base,
-                provider="ollama",
+                provider=TEST_PROVIDER,
                 model="test",
             )
         assert "negmas >= 0.16.0" in str(exc_info.value)
@@ -95,12 +117,12 @@ class TestLLMMetaNegotiatorUnit:
         base = BoulwareTBNegotiator()
         meta = LLMMetaNegotiator(
             base_negotiator=base,
-            provider="ollama",
-            model=OLLAMA_MODEL,
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
             name="test_meta",
         )
-        assert meta.model == OLLAMA_MODEL
-        assert meta.provider == "ollama"
+        assert meta.model == TEST_MODEL
+        assert meta.provider == TEST_PROVIDER
         assert meta.name == "test_meta"
         assert meta.base_negotiator is base
 
@@ -119,8 +141,8 @@ class TestLLMMetaNegotiatorUnit:
         base = BoulwareTBNegotiator(name="base_neg")
         meta = LLMMetaNegotiator(
             base_negotiator=base,
-            provider="ollama",
-            model=OLLAMA_MODEL,
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
         )
         # Check that the base is in the negotiators list
         assert len(meta.negotiators) == 1
@@ -133,8 +155,8 @@ class TestLLMMetaNegotiatorUnit:
         custom_prompt = "You are a tough negotiator."
         meta = LLMMetaNegotiator(
             base_negotiator=base,
-            provider="ollama",
-            model=OLLAMA_MODEL,
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
             system_prompt=custom_prompt,
         )
         assert meta._build_system_prompt() == custom_prompt
@@ -151,8 +173,8 @@ class TestLLMMetaNegotiatorWithMock:
         base = BoulwareTBNegotiator(ufun=ufun1)
         meta = LLMMetaNegotiator(
             base_negotiator=base,
-            provider="ollama",
-            model=OLLAMA_MODEL,
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
             ufun=ufun1,
         )
 
@@ -190,15 +212,15 @@ class TestLLMMetaNegotiatorWithMock:
 
         meta1 = LLMMetaNegotiator(
             base_negotiator=base1,
-            provider="ollama",
-            model=OLLAMA_MODEL,
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
             ufun=ufun1,
             name="meta1",
         )
         meta2 = LLMMetaNegotiator(
             base_negotiator=base2,
-            provider="ollama",
-            model=OLLAMA_MODEL,
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
             ufun=ufun1,  # Same ufun
             name="meta2",
         )
@@ -256,15 +278,15 @@ class TestLLMMetaNegotiatorIntegration:
 
         meta_boulware = LLMMetaNegotiator(
             base_negotiator=boulware_base,
-            provider="ollama",
-            model=OLLAMA_MODEL,
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
             ufun=ufun1,
             name="boulware_meta",
         )
         meta_linear = LLMMetaNegotiator(
             base_negotiator=linear_base,
-            provider="ollama",
-            model=OLLAMA_MODEL,
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
             ufun=ufun2,
             name="linear_meta",
         )
@@ -321,14 +343,14 @@ class TestLLMMetaNegotiatorIntegration:
 
         meta1 = LLMMetaNegotiator(
             base_negotiator=base1,
-            provider="ollama",
-            model=OLLAMA_MODEL,
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
             ufun=ufun1,
         )
         meta2 = LLMMetaNegotiator(
             base_negotiator=base2,
-            provider="ollama",
-            model=OLLAMA_MODEL,
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
             ufun=ufun2,
         )
 
@@ -369,14 +391,14 @@ class TestLLMMetaNegotiatorIntegration:
         # Second run: meta negotiators with mocked LLM
         meta_boulware = LLMMetaNegotiator(
             base_negotiator=BoulwareTBNegotiator(),
-            provider="ollama",
-            model=OLLAMA_MODEL,
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
             ufun=ufun1,
         )
         meta_linear = LLMMetaNegotiator(
             base_negotiator=LinearTBNegotiator(),
-            provider="ollama",
-            model=OLLAMA_MODEL,
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
             ufun=ufun2,
         )
 
