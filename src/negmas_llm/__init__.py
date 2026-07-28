@@ -28,6 +28,25 @@ from negmas_llm.config import (
     per_type_env_var,
     resolve_llm_config,
 )
+from negmas_llm.pablove_components import (
+    LLMComponent,
+    LLMLanguage,
+    LLMPerception,
+    TemplateLanguage,
+)
+from negmas_llm.pablove import (
+    Ending,
+    EndingDecision,
+    Language,
+    PABLOveNegotiator,
+    Perception,
+    PerceptionResult,
+    TurnContext,
+    Utterance,
+    Validation,
+    ValidationResult,
+    make_pablove,
+)
 from negmas_llm.meta import (
     LLMAspirationNegotiator,
     LLMBoulwareTBNegotiator,
@@ -35,6 +54,7 @@ from negmas_llm.meta import (
     LLMCANNegotiator,
     LLMCARNegotiator,
     LLMConcederTBNegotiator,
+    LLMEnhancedNegotiator,
     LLMFastMiCRONegotiator,
     LLMHybridNegotiator,
     LLMLimitedOutcomesAcceptor,
@@ -43,6 +63,8 @@ from negmas_llm.meta import (
     LLMMetaNegotiator,
     LLMMiCRONegotiator,
     LLMNaiveTitForTatNegotiator,
+    LLMNegotiatorWithMultipleRecommenders,
+    LLMNegotiatorWithRecommender,
     LLMNiceNegotiator,
     LLMRandomAlwaysAcceptingNegotiator,
     LLMRandomNegotiator,
@@ -377,6 +399,25 @@ if is_meta_negotiator_available():
         tags={"llm", "sao", "meta", "hybrid"},
     )
 
+    # Recommender-based meta negotiators
+    negotiator_registry.register(
+        LLMNegotiatorWithRecommender,
+        source=_NEGOTIATOR_SOURCE,
+        tags={"llm", "sao", "meta", "recommender"},
+    )
+
+    negotiator_registry.register(
+        LLMEnhancedNegotiator,
+        source=_NEGOTIATOR_SOURCE,
+        tags={"llm", "sao", "meta", "enhanced"},
+    )
+
+    negotiator_registry.register(
+        LLMNegotiatorWithMultipleRecommenders,
+        source=_NEGOTIATOR_SOURCE,
+        tags={"llm", "sao", "meta", "multi-recommender"},
+    )
+
 # Non-LLM negotiators (template-based, no LLM calls)
 negotiator_registry.register(
     TemplateBasedAdapterNegotiator,
@@ -488,6 +529,22 @@ component_registry.register(
 )
 
 __all__ = [
+    # PABLO-ve component architecture
+    "PABLOveNegotiator",
+    "make_pablove",
+    "Perception",
+    "Language",
+    "Ending",
+    "Validation",
+    "TurnContext",
+    "PerceptionResult",
+    "Utterance",
+    "EndingDecision",
+    "ValidationResult",
+    "LLMComponent",
+    "LLMLanguage",
+    "LLMPerception",
+    "TemplateLanguage",
     # LLM provider/model configuration (single source of truth)
     "resolve_llm_config",
     "effective_llm_config",
@@ -500,6 +557,9 @@ __all__ = [
     "LLMNegotiator",
     # Meta negotiator
     "LLMMetaNegotiator",
+    "LLMNegotiatorWithRecommender",
+    "LLMEnhancedNegotiator",
+    "LLMNegotiatorWithMultipleRecommenders",
     "is_meta_negotiator_available",
     # LLM-wrapped native negotiators (meta)
     "LLMAspirationNegotiator",
