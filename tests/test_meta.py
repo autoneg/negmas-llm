@@ -11,10 +11,17 @@ from negmas.preferences import LinearAdditiveUtilityFunction as LUFun
 from negmas.sao import (
     BoulwareTBNegotiator,
     LinearTBNegotiator,
+    ResponseType,
     SAOMechanism,
 )
 
-from negmas_llm import LLMMetaNegotiator, is_meta_negotiator_available
+from negmas_llm import (
+    LLMEnhancedNegotiator,
+    LLMMetaNegotiator,
+    LLMNegotiatorWithMultipleRecommenders,
+    LLMNegotiatorWithRecommender,
+    is_meta_negotiator_available,
+)
 from negmas_llm.common import DEFAULT_MODELS
 
 # LLM provider/model for the tests, configurable via environment variables.
@@ -437,3 +444,318 @@ class TestLLMMetaNegotiatorIntegration:
             assert raw_offer == meta_offer, (
                 f"Offers don't match: {raw_offer} vs {meta_offer}"
             )
+
+
+@_skip_if_unavailable
+class TestRecommenderMetaNegotiators:
+    """Tests for the enforce_* flags and the recommender subclasses."""
+
+    def test_enforce_flags_default_true(self):
+        """LLMMetaNegotiator defaults to enforcing the base outcome/response."""
+        base = BoulwareTBNegotiator()
+        meta = LLMMetaNegotiator(
+            base_negotiator=base, provider=TEST_PROVIDER, model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS
+        )
+        assert meta.enforce_base_offer is True
+        assert meta.enforce_base_response is True
+
+    def test_recommender_subclass_flags_false(self):
+        """LLMNegotiatorWithRecommender hardcodes the flags to False."""
+        base = BoulwareTBNegotiator()
+        meta = LLMNegotiatorWithRecommender(
+            base_negotiator=base, provider=TEST_PROVIDER, model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS
+        )
+        assert meta.enforce_base_offer is False
+        assert meta.enforce_base_response is False
+        # The enforce flags are not accepted in the constructor.
+        with pytest.raises(TypeError):
+            LLMNegotiatorWithRecommender(
+                base_negotiator=base,
+                provider=TEST_PROVIDER,
+                model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+                enforce_base_offer=True,
+            )
+
+    def test_enhanced_subclass_flags_true(self):
+        """LLMEnhancedNegotiator hardcodes the flags to True."""
+        base = BoulwareTBNegotiator()
+        meta = LLMEnhancedNegotiator(
+            base_negotiator=base, provider=TEST_PROVIDER, model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS
+        )
+        assert meta.enforce_base_offer is True
+        assert meta.enforce_base_response is True
+        # The enforce flags are not accepted in the constructor.
+        with pytest.raises(TypeError):
+            LLMEnhancedNegotiator(
+                base_negotiator=base,
+                provider=TEST_PROVIDER,
+                model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+                enforce_base_offer=False,
+            )
+
+    def test_multi_recommender_registers_all(self):
+        """LLMNegotiatorWithMultipleRecommenders exposes all recommenders."""
+        recommenders = [
+            BoulwareTBNegotiator(),
+            LinearTBNegotiator(),
+            BoulwareTBNegotiator(),
+        ]
+        names = ["boulware", "linear", "boulware2"]
+        meta = LLMNegotiatorWithMultipleRecommenders(
+            recommenders=recommenders,
+            recommender_names=names,
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+        )
+        assert len(meta.recommenders) == 3
+        assert tuple(meta.negotiator_names) == tuple(names)
+        assert meta.enforce_base_offer is False
+        assert meta.enforce_base_response is False
+        # It does not accept base_negotiator or enforce flags.
+        with pytest.raises(TypeError):
+            LLMNegotiatorWithMultipleRecommenders(
+                recommenders=recommenders,
+                recommender_names=names,
+                provider=TEST_PROVIDER,
+                model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+                base_negotiator=recommenders[0],
+            )
+
+    def test_multi_recommender_requires_at_least_one(self):
+        """An empty recommender list is rejected."""
+        with pytest.raises(ValueError):
+            LLMNegotiatorWithMultipleRecommenders(
+                recommenders=[], provider=TEST_PROVIDER, model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS
+            )
+
+    def test_multi_recommender_name_length_mismatch(self):
+        """Mismatched names length is rejected."""
+        with pytest.raises(ValueError):
+            LLMNegotiatorWithMultipleRecommenders(
+                recommenders=[BoulwareTBNegotiator(), LinearTBNegotiator()],
+                recommender_names=["only_one"],
+                provider=TEST_PROVIDER,
+                model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            )
+
+    def test_propose_override_uses_llm_outcome(self, simple_negotiation_setup):
+        """With enforce_base_offer=False the LLM overrides the base outcome."""
+        outcome_space, ufun1, _ = simple_negotiation_setup
+
+        base = BoulwareTBNegotiator(ufun=ufun1)
+        meta = LLMMetaNegotiator(
+            base_negotiator=base,
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            ufun=ufun1,
+            enforce_base_offer=False,
+        )
+        mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=10)
+        mechanism.add(meta)
+        state = mechanism.state
+
+        with (
+            patch.object(meta.base_negotiator, "propose", return_value=(0, 1)),
+            patch.object(meta, "_call_llm") as mock_llm,
+        ):
+            mock_llm.return_value = (
+                '{"outcome": {"price": 50, "quantity": 5}, "text": "override"}'
+            )
+            proposal = meta.propose(state)
+
+        from negmas.outcomes import ExtendedOutcome
+
+        assert isinstance(proposal, ExtendedOutcome)
+        assert proposal.outcome == (50, 5)
+        assert proposal.data["text"] == "override"
+
+    def test_propose_override_falls_back_on_invalid(self, simple_negotiation_setup):
+        """An invalid LLM outcome falls back to the base outcome."""
+        outcome_space, ufun1, _ = simple_negotiation_setup
+
+        base = BoulwareTBNegotiator(ufun=ufun1)
+        meta = LLMMetaNegotiator(
+            base_negotiator=base,
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            ufun=ufun1,
+            enforce_base_offer=False,
+        )
+        mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=10)
+        mechanism.add(meta)
+        state = mechanism.state
+
+        with (
+            patch.object(meta.base_negotiator, "propose", return_value=(0, 1)),
+            patch.object(meta, "_call_llm") as mock_llm,
+        ):
+            mock_llm.return_value = (
+                '{"outcome": {"price": 101, "quantity": 5}, "text": "bad"}'
+            )
+            with pytest.warns(UserWarning):
+                proposal = meta.propose(state)
+
+        assert proposal is not None
+        assert proposal.outcome == (0, 1)  # falls back to base
+        assert proposal.data["text"] == "bad"
+
+    def test_respond_override_uses_llm_response(self, simple_negotiation_setup):
+        """With enforce_base_response=False the LLM overrides the base response."""
+        outcome_space, ufun1, _ = simple_negotiation_setup
+
+        base = BoulwareTBNegotiator(ufun=ufun1)
+        meta = LLMMetaNegotiator(
+            base_negotiator=base,
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            ufun=ufun1,
+            enforce_base_response=False,
+        )
+        mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=10)
+        mechanism.add(meta)
+        state = mechanism.state
+
+        with (
+            patch.object(
+                meta.base_negotiator, "respond", return_value=ResponseType.REJECT_OFFER
+            ),
+            patch.object(meta, "_call_llm") as mock_llm,
+        ):
+            mock_llm.return_value = '{"response": "accept", "text": "ok"}'
+            response = meta.respond(state)
+
+        from negmas.gb.common import ExtendedResponseType
+
+        assert isinstance(response, ExtendedResponseType)
+        assert response.response == ResponseType.ACCEPT_OFFER
+        assert response.data["text"] == "ok"
+
+    def test_respond_override_falls_back_on_unparseable(self, simple_negotiation_setup):
+        """An unparseable LLM response falls back to the base response."""
+        outcome_space, ufun1, _ = simple_negotiation_setup
+
+        base = BoulwareTBNegotiator(ufun=ufun1)
+        meta = LLMMetaNegotiator(
+            base_negotiator=base,
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            ufun=ufun1,
+            enforce_base_response=False,
+        )
+        mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=10)
+        mechanism.add(meta)
+        state = mechanism.state
+
+        with (
+            patch.object(
+                meta.base_negotiator, "respond", return_value=ResponseType.REJECT_OFFER
+            ),
+            patch.object(meta, "_call_llm") as mock_llm,
+        ):
+            mock_llm.return_value = "this is not json"
+            response = meta.respond(state)
+
+        from negmas.gb.common import ExtendedResponseType
+
+        assert isinstance(response, ExtendedResponseType)
+        assert response.response == ResponseType.REJECT_OFFER  # falls back to base
+        assert response.data["text"] == "this is not json"
+
+    def test_multi_recommender_propose_synthesizes(self, simple_negotiation_setup):
+        """The LLM synthesizes one outcome from multiple recommendations."""
+        outcome_space, ufun1, _ = simple_negotiation_setup
+
+        r1 = BoulwareTBNegotiator(ufun=ufun1)
+        r2 = LinearTBNegotiator(ufun=ufun1)
+        meta = LLMNegotiatorWithMultipleRecommenders(
+            recommenders=[r1, r2],
+            recommender_names=["boulware", "linear"],
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            ufun=ufun1,
+        )
+        mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=10)
+        mechanism.add(meta)
+        state = mechanism.state
+
+        with (
+            patch.object(r1, "propose", return_value=(0, 1)),
+            patch.object(r2, "propose", return_value=(100, 10)),
+            patch.object(meta, "_call_llm") as mock_llm,
+        ):
+            mock_llm.return_value = (
+                '{"outcome": {"price": 50, "quantity": 5}, "text": "synth"}'
+            )
+            proposal = meta.propose(state)
+
+        from negmas.outcomes import ExtendedOutcome
+
+        assert isinstance(proposal, ExtendedOutcome)
+        assert proposal.outcome == (50, 5)
+        assert proposal.data["text"] == "synth"
+
+    def test_multi_recommender_propose_falls_back(self, simple_negotiation_setup):
+        """An invalid LLM outcome falls back to the first recommendation."""
+        outcome_space, ufun1, _ = simple_negotiation_setup
+
+        r1 = BoulwareTBNegotiator(ufun=ufun1)
+        r2 = LinearTBNegotiator(ufun=ufun1)
+        meta = LLMNegotiatorWithMultipleRecommenders(
+            recommenders=[r1, r2],
+            recommender_names=["boulware", "linear"],
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            ufun=ufun1,
+        )
+        mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=10)
+        mechanism.add(meta)
+        state = mechanism.state
+
+        with (
+            patch.object(r1, "propose", return_value=(0, 1)),
+            patch.object(r2, "propose", return_value=(100, 10)),
+            patch.object(meta, "_call_llm") as mock_llm,
+        ):
+            mock_llm.return_value = (
+                '{"outcome": {"price": 101, "quantity": 5}, "text": "bad"}'
+            )
+            with pytest.warns(UserWarning):
+                proposal = meta.propose(state)
+
+        assert proposal is not None
+        assert proposal.outcome == (0, 1)  # first non-None recommendation
+        assert proposal.data["text"] == "bad"
+
+    def test_multi_recommender_respond_majority_fallback(
+        self, simple_negotiation_setup
+    ):
+        """An unparseable LLM response falls back to the majority vote."""
+        outcome_space, ufun1, _ = simple_negotiation_setup
+
+        r1 = BoulwareTBNegotiator(ufun=ufun1)
+        r2 = LinearTBNegotiator(ufun=ufun1)
+        r3 = BoulwareTBNegotiator(ufun=ufun1)
+        meta = LLMNegotiatorWithMultipleRecommenders(
+            recommenders=[r1, r2, r3],
+            recommender_names=["a", "b", "c"],
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            ufun=ufun1,
+        )
+        mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=10)
+        mechanism.add(meta)
+        state = mechanism.state
+
+        with (
+            patch.object(r1, "respond", return_value=ResponseType.ACCEPT_OFFER),
+            patch.object(r2, "respond", return_value=ResponseType.ACCEPT_OFFER),
+            patch.object(r3, "respond", return_value=ResponseType.REJECT_OFFER),
+            patch.object(meta, "_call_llm") as mock_llm,
+        ):
+            mock_llm.return_value = "garbage"
+            response = meta.respond(state)
+
+        from negmas.gb.common import ExtendedResponseType
+
+        assert isinstance(response, ExtendedResponseType)
+        assert response.response == ResponseType.ACCEPT_OFFER  # 2 vs 1 majority
