@@ -6,11 +6,13 @@ import json
 import re
 import textwrap
 import time
+import warnings
 from typing import TYPE_CHECKING, Any, cast
 
 import litellm
 from litellm import ModelResponse
 from negmas.gb.common import ExtendedResponseType
+from negmas.inout import serialize
 from negmas.outcomes import ExtendedOutcome, Outcome
 from negmas.sao import ResponseType, SAONegotiator, SAOState
 from negmas.sao.negotiators.meta import SAOMetaNegotiator
@@ -43,6 +45,10 @@ if TYPE_CHECKING:
 __all__ = [
     "LLMMetaNegotiator",
     "is_meta_negotiator_available",
+    # Recommender-based meta negotiators
+    "LLMNegotiatorWithRecommender",
+    "LLMEnhancedNegotiator",
+    "LLMNegotiatorWithMultipleRecommenders",
     # LLM-wrapped native negotiators
     "LLMAspirationNegotiator",
     "LLMBoulwareTBNegotiator",
@@ -129,6 +135,16 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         max_words: Approximate word budget for the generated message, stated in
             the prompt. None (default) uses
             :data:`negmas_llm.common.DEFAULT_MAX_WORDS`; 0 removes the limit.
+        enforce_base_offer: When True (default) the structured outcome of every
+            proposal is taken verbatim from the base negotiator and the LLM only
+            fills ``data["text"]``. When False the LLM may override the outcome,
+            treating the base proposal as a recommendation; if the LLM's outcome
+            is invalid or unparseable it falls back to the base proposal.
+        enforce_base_response: When True (default) the accept/reject/end decision
+            is taken verbatim from the base negotiator and the LLM only fills
+            ``data["text"]``. When False the LLM may override the decision,
+            treating the base response as a recommendation; if the LLM's response
+            is unparseable it falls back to the base response.
         verbose: If True, print LLM prompts and responses to stdout. Useful for
             debugging and understanding the LLM's text generation process.
             Default is False.
@@ -180,6 +196,8 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         max_words: int | None = None,
         timeout: float | int | None = None,
         num_retries: int | None = None,
+        enforce_base_offer: bool = True,
+        enforce_base_response: bool = True,
         verbose: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
@@ -212,6 +230,39 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
             default_model=self.DEFAULT_MODEL,
             lock_provider=self.LOCK_PROVIDER,
         )
+        self._store_llm_config(
+            resolved,
+            verbose=verbose,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+        )
+        self.enforce_base_offer = enforce_base_offer
+        self.enforce_base_response = enforce_base_response
+
+        # Track received messages for context
+        self._received_messages: list[dict[str, Any]] = []
+
+    def _store_llm_config(
+        self,
+        resolved: Any,
+        *,
+        verbose: bool,
+        system_prompt: str | None,
+        llm_kwargs: dict[str, Any] | None,
+    ) -> None:
+        """Store resolved LLM configuration on this negotiator.
+
+        Factored out of :meth:`__init__` so subclasses that register their
+        sub-negotiators differently (e.g. multiple recommenders) can still reuse
+        the same configuration wiring without re-running the single-base
+        constructor path.
+
+        Args:
+            resolved: The resolved LLM config from :func:`resolve_llm_config`.
+            verbose: If True, print LLM prompts and responses to stdout.
+            system_prompt: Custom system prompt for text generation (if any).
+            llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        """
         self.provider = resolved.provider
         self.model = resolved.model
         self.effort = resolved.effort
@@ -225,9 +276,6 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         self.verbose = verbose
         self._custom_system_prompt = system_prompt
         self.llm_kwargs = llm_kwargs or {}
-
-        # Track received messages for context
-        self._received_messages: list[dict[str, Any]] = []
 
     @property
     def base_negotiator(self) -> SAONegotiator:
@@ -270,8 +318,20 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         # Extract any text received from the other party
         received_text = self._extract_received_text(state)
 
-        # Generate text to accompany the offer
-        generated_text = self._generate_text(state, "propose", outcome, received_text)
+        if not self.enforce_base_offer:
+            # The LLM may override the structured outcome, treating the base
+            # proposal as a recommendation. Falls back to the base outcome if
+            # the LLM's output is invalid or unparseable.
+            decided_outcome, generated_text = self._decide_outcome(
+                state, [("base", outcome)], received_text
+            )
+            if decided_outcome is not None:
+                outcome = decided_outcome
+        else:
+            # Generate text to accompany the offer (base decides the outcome)
+            generated_text = self._generate_text(
+                state, "propose", outcome, received_text
+            )
 
         # Combine base data with generated text
         data = {**base_data, "text": generated_text}
@@ -313,23 +373,32 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
             response_type = base_response
             base_data = {}
 
-        # Determine the action for text generation
-        if response_type == ResponseType.ACCEPT_OFFER:
-            action = "accept"
-        elif response_type == ResponseType.END_NEGOTIATION:
-            action = "end"
+        if not self.enforce_base_response:
+            # The LLM may override the accept/reject/end decision, treating the
+            # base response as a recommendation. Falls back to the base
+            # response_type if the LLM's output is unparseable. The LLM always
+            # gets to decide here, even for a rejection with no received text.
+            decided_response, generated_text = self._decide_response(
+                state, [("base", response_type)], received_text
+            )
+            if decided_response is not None:
+                response_type = decided_response
         else:
-            # For rejections, text will be added with the counter-proposal
-            # Only generate text here if there's received text to respond to
-            if received_text:
-                action = "reject"
+            # Base decides the action; the LLM only adds text. For a rejection
+            # with no received text there is nothing to say, so return the raw
+            # base response unchanged (no LLM call, no wrapping).
+            if response_type == ResponseType.ACCEPT_OFFER:
+                action = "accept"
+            elif response_type == ResponseType.END_NEGOTIATION:
+                action = "end"
             else:
-                return base_response
-
-        # Generate text to accompany the response
-        generated_text = self._generate_text(
-            state, action, state.current_offer, received_text
-        )
+                if received_text:
+                    action = "reject"
+                else:
+                    return base_response
+            generated_text = self._generate_text(
+                state, action, state.current_offer, received_text
+            )
 
         # Combine base data with generated text
         data = {**base_data, "text": generated_text}
@@ -619,6 +688,353 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
                         return str(text)
 
         return None
+
+    # =========================================================================
+    # LLM-decides helpers (override / synthesis path)
+    # =========================================================================
+    #
+    # Used when ``enforce_base_offer``/``enforce_base_response`` is False, and by
+    # the recommender subclasses. The LLM is asked to choose an outcome (or a
+    # response) from one or more base recommendations and return strict JSON. An
+    # invalid/unparseable result yields ``None`` so the caller can fall back to
+    # the base.
+
+    def _format_outcome_space(self) -> str:
+        """Format the outcome space for the LLM.
+
+        Returns:
+            A string describing the outcome space, or an empty string if the
+            NMI or outcome space is unavailable.
+        """
+        if self.nmi is None or self.nmi.outcome_space is None:
+            return ""
+        outcome_space = self.nmi.outcome_space
+        try:
+            os_dict = serialize(outcome_space)
+            os_dict.pop("__python_class__", None)
+            parts = [
+                "The outcome space follows.",
+                "",
+                f"```json\n{json.dumps(os_dict, indent=2, default=str)}\n```",
+                "",
+                "An outcome is a mapping of each issue name to one of its values.",
+            ]
+            return "\n".join(parts)
+        except Exception:
+            return f"The outcome space follows.\n\n{outcome_space}\n"
+
+    def _format_outcome(self, outcome: Outcome | None) -> str:
+        """Format a single outcome for display to the LLM.
+
+        Args:
+            outcome: The outcome to format.
+
+        Returns:
+            A human-readable ``{issue=value, ...}`` string when the outcome space
+            is known, else ``str(outcome)``.
+        """
+        if outcome is None:
+            return "None"
+        if self.nmi is not None and self.nmi.outcome_space is not None:
+            try:
+                issues = self.nmi.outcome_space.issues  # type: ignore[attr-defined]
+                if issues:
+                    parts = []
+                    for i, value in enumerate(outcome):
+                        if i < len(issues):
+                            parts.append(f"{issues[i].name}={value}")
+                        else:
+                            parts.append(str(value))
+                    return "{" + ", ".join(parts) + "}"
+            except AttributeError:
+                pass
+        return str(outcome)
+
+    def _build_decision_system_prompt(self, for_response: bool) -> str:
+        """Build the system prompt for the override/synthesis path.
+
+        Args:
+            for_response: True for the respond path (choose a response), False
+                for the propose path (choose an outcome).
+
+        Returns:
+            The system prompt string.
+        """
+        if for_response:
+            return _dedent("""
+                You are the decision-maker in a negotiation. You receive one or
+                more recommended responses from base strategies and must decide
+                whether to ACCEPT the current offer, REJECT it, or END the
+                negotiation.
+
+                You may follow a recommendation or choose differently.
+
+                Respond with ONLY this JSON:
+                {
+                    "response": "accept" | "reject" | "end",
+                    "text": "a brief message for the counterpart"
+                }
+                """)
+        return _dedent("""
+            You are the decision-maker in a negotiation. You receive one or more
+            recommended outcomes from base strategies and must decide the
+            outcome to propose.
+
+            You may follow a recommendation or choose a different valid outcome
+            from the outcome space.
+
+            Respond with ONLY this JSON:
+            {
+                "outcome": {"issue_name": value, ...},
+                "text": "a brief message for the counterpart"
+            }
+            """)
+
+    def _build_decision_user_message(
+        self,
+        state: SAOState,
+        recommendations: list[tuple[str, Any]],
+        received_text: str | None,
+        for_response: bool,
+    ) -> str:
+        """Build the user message for the override/synthesis path.
+
+        Args:
+            state: The current negotiation state.
+            recommendations: ``(name, value)`` pairs where ``value`` is an
+                outcome (propose) or a :class:`ResponseType` (respond).
+            received_text: Text received from the other party (if any).
+            for_response: True for respond, False for propose.
+
+        Returns:
+            The user message string.
+        """
+        parts = [
+            f"This is round {state.step} (relative time is {state.relative_time:.1%}).",
+            "",
+        ]
+        if for_response and state.current_offer is not None:
+            parts.append(
+                f"The current offer on the table is {self._format_outcome(state.current_offer)}."
+            )
+            parts.append("")
+        if received_text:
+            parts.append(f'The other party said: "{received_text}"')
+            parts.append("")
+        if not for_response:
+            os_text = self._format_outcome_space()
+            if os_text:
+                parts.append(os_text)
+                parts.append("")
+
+        response_label = {
+            ResponseType.ACCEPT_OFFER: "accept",
+            ResponseType.REJECT_OFFER: "reject",
+            ResponseType.END_NEGOTIATION: "end",
+        }
+        parts.append("Recommendations from base strategies:")
+        for name, value in recommendations:
+            if for_response:
+                label = response_label.get(value, str(value))
+                parts.append(f"  - {name}: {label}")
+            else:
+                parts.append(f"  - {name}: {self._format_outcome(value)}")
+        parts.append("")
+
+        if for_response:
+            parts.append(
+                "Decide whether to accept, reject, or end the negotiation and "
+                "write a brief message."
+            )
+        else:
+            parts.append(
+                "Choose an outcome to propose and write a brief message for it."
+            )
+        return "\n".join(parts)
+
+    def _parse_decision_response(
+        self, response_text: str, for_response: bool
+    ) -> tuple[Any | None, str]:
+        """Parse the LLM decision response.
+
+        Args:
+            response_text: The raw LLM response.
+            for_response: True for respond, False for propose.
+
+        Returns:
+            A ``(value, text)`` tuple. For propose, ``value`` is an
+            :class:`Outcome` or ``None``. For respond, ``value`` is a
+            :class:`ResponseType` or ``None``. ``text`` is the message (possibly
+            the stripped raw response on parse failure).
+        """
+        json_match = re.search(r"\{[\s\S]*\}", response_text)
+        text: str | None = None
+        if not json_match:
+            return None, response_text.strip()
+        try:
+            data = json.loads(json_match.group())
+        except json.JSONDecodeError:
+            return None, response_text.strip()
+        if isinstance(data, dict) and "text" in data:
+            text = str(data["text"])
+
+        if for_response:
+            response_str = str(data.get("response", "")).lower()
+            response_map = {
+                "accept": ResponseType.ACCEPT_OFFER,
+                "reject": ResponseType.REJECT_OFFER,
+                "end": ResponseType.END_NEGOTIATION,
+            }
+            value: Any | None = response_map.get(response_str)
+        else:
+            value = self._outcome_from_data(data.get("outcome"))
+
+        if text is None:
+            text = response_text.strip()
+        return value, text
+
+    def _outcome_from_data(self, outcome_data: Any) -> Outcome | None:
+        """Convert raw LLM outcome data into an outcome tuple.
+
+        Mirrors :meth:`LLMNegotiator._parse_llm_response`: a list becomes a
+        tuple directly; a dict is ordered by the outcome-space issues when
+        available, else by dict insertion order.
+
+        Args:
+            outcome_data: The raw parsed ``outcome`` value from the LLM JSON.
+
+        Returns:
+            An outcome tuple, or ``None`` if it cannot be interpreted.
+        """
+        if outcome_data is None:
+            return None
+        if isinstance(outcome_data, list):
+            return tuple(outcome_data)
+        if isinstance(outcome_data, dict):
+            if self.nmi is not None and self.nmi.outcome_space is not None:
+                try:
+                    issues = self.nmi.outcome_space.issues  # type: ignore[attr-defined]
+                    if issues:
+                        values = []
+                        for issue in issues:
+                            if issue.name in outcome_data:
+                                values.append(outcome_data[issue.name])
+                            else:
+                                # Case-insensitive fallback
+                                found = False
+                                for key, val in outcome_data.items():
+                                    if key.lower() == issue.name.lower():
+                                        values.append(val)
+                                        found = True
+                                        break
+                                if not found:
+                                    break
+                        if len(values) == len(issues):
+                            return tuple(values)
+                except AttributeError:
+                    pass
+            return tuple(outcome_data.values())
+        return None
+
+    def _validate_outcome(self, outcome: Outcome | None) -> Outcome | None:
+        """Validate an outcome against the outcome space.
+
+        Args:
+            outcome: The outcome to validate.
+
+        Returns:
+            The outcome if valid, ``None`` if it has None values or is not valid
+            in the outcome space (a warning is emitted in the latter cases).
+        """
+        if outcome is None:
+            return None
+        if any(v is None for v in outcome):
+            warnings.warn(
+                f"LLM returned outcome with None values: {outcome}. "
+                "Falling back to the base recommendation.",
+                stacklevel=2,
+            )
+            return None
+        if self.nmi is not None and self.nmi.outcome_space is not None:
+            try:
+                if self.nmi.outcome_space.is_valid(outcome):  # type: ignore[attr-defined]
+                    return outcome
+                warnings.warn(
+                    f"LLM returned invalid outcome: {outcome}. Not valid in "
+                    "the outcome space. Falling back to the base recommendation.",
+                    stacklevel=2,
+                )
+                return None
+            except (AttributeError, TypeError):
+                pass
+        return outcome
+
+    def _decide_outcome(
+        self,
+        state: SAOState,
+        recommendations: list[tuple[str, Outcome | None]],
+        received_text: str | None,
+    ) -> tuple[Outcome | None, str]:
+        """Ask the LLM to choose an outcome from recommendations.
+
+        Args:
+            state: The current negotiation state.
+            recommendations: ``(name, outcome)`` pairs from base strategies.
+            received_text: Text received from the other party (if any).
+
+        Returns:
+            A ``(validated_outcome, text)`` tuple. ``validated_outcome`` is
+            ``None`` if the LLM's outcome is invalid or unparseable (caller
+            falls back to the base).
+        """
+        system_prompt = self._build_decision_system_prompt(for_response=False)
+        limit = word_limit_instruction(self.max_words)
+        if limit:
+            system_prompt = f"{system_prompt}\n{limit}\n"
+        user_message = self._build_decision_user_message(
+            state, recommendations, received_text, for_response=False
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ]
+        response_text = self._call_llm(messages, state)
+        outcome, text = self._parse_decision_response(response_text, for_response=False)
+        return self._validate_outcome(outcome), text
+
+    def _decide_response(
+        self,
+        state: SAOState,
+        recommendations: list[tuple[str, ResponseType]],
+        received_text: str | None,
+    ) -> tuple[ResponseType | None, str]:
+        """Ask the LLM to choose a response from recommendations.
+
+        Args:
+            state: The current negotiation state.
+            recommendations: ``(name, response_type)`` pairs from base strategies.
+            received_text: Text received from the other party (if any).
+
+        Returns:
+            A ``(response_type, text)`` tuple. ``response_type`` is ``None`` if
+            the LLM's response is unparseable (caller falls back to the base).
+        """
+        system_prompt = self._build_decision_system_prompt(for_response=True)
+        limit = word_limit_instruction(self.max_words)
+        if limit:
+            system_prompt = f"{system_prompt}\n{limit}\n"
+        user_message = self._build_decision_user_message(
+            state, recommendations, received_text, for_response=True
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ]
+        response_text = self._call_llm(messages, state)
+        response_type, text = self._parse_decision_response(
+            response_text, for_response=True
+        )
+        return response_type, text
 
     def on_negotiation_start(self, state) -> None:
         """Reset received messages when negotiation starts.
@@ -1851,3 +2267,361 @@ class LLMHybridNegotiator(LLMMetaNegotiator):
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
+
+
+# =============================================================================
+# Recommender-based meta negotiators
+# =============================================================================
+#
+# These expose the "LLM decides from base recommendation(s)" mechanism built
+# into LLMMetaNegotiator as named classes. ``LLMNegotiatorWithRecommender`` and
+# ``LLMEnhancedNegotiator`` wrap a single base; ``LLMNegotiatorWithMultipleRecommenders``
+# wraps several named bases and synthesizes one outcome/response from all their
+# recommendations.
+
+
+class LLMNegotiatorWithRecommender(LLMMetaNegotiator):
+    """An LLMMetaNegotiator that lets the LLM decide the outcome and response.
+
+    The single base negotiator acts as a *recommender*: its proposal/response is
+    passed to the LLM, which may follow it or override it. This is exactly
+    :class:`LLMMetaNegotiator` with both ``enforce_*`` flags set to ``False``;
+    the flags are not exposed in the constructor.
+
+    Args:
+        base_negotiator: The recommender negotiator.
+        provider: The LLM provider (None resolves from the environment).
+        model: The model name (None resolves from the environment).
+        effort: Optional reasoning effort.
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API (useful for local deployments).
+        temperature: Sampling temperature for the LLM.
+        max_tokens: Hard ceiling on tokens the model may spend.
+        max_words: Approximate word budget for the generated message.
+        timeout: Request timeout in seconds.
+        num_retries: Number of retries on transient failures.
+        verbose: If True, print LLM prompts and responses to stdout.
+        system_prompt: Custom system prompt for the LLM decision.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to SAOMetaNegotiator.
+    """
+
+    def __init__(
+        self,
+        base_negotiator: SAONegotiator,
+        provider: str | None = None,
+        model: str | None = None,
+        *,
+        effort: str | None = None,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        max_words: int | None = None,
+        timeout: float | int | None = None,
+        num_retries: int | None = None,
+        verbose: bool = False,
+        system_prompt: str | None = None,
+        llm_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            base_negotiator=base_negotiator,
+            provider=provider,
+            model=model,
+            effort=effort,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            max_words=max_words,
+            timeout=timeout,
+            num_retries=num_retries,
+            enforce_base_offer=False,
+            enforce_base_response=False,
+            verbose=verbose,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+            **kwargs,
+        )
+
+
+class LLMEnhancedNegotiator(LLMMetaNegotiator):
+    """An LLMMetaNegotiator where the base decides and the LLM only adds text.
+
+    The structured outcome of every proposal and the accept/reject/end decision
+    come verbatim from the base negotiator; the LLM only generates the
+    accompanying ``data["text"]``. This is exactly :class:`LLMMetaNegotiator`
+    with both ``enforce_*`` flags set to ``True`` (the default); the flags are
+    not exposed in the constructor.
+
+    Args:
+        base_negotiator: The base negotiator that decides offers and responses.
+        provider: The LLM provider (None resolves from the environment).
+        model: The model name (None resolves from the environment).
+        effort: Optional reasoning effort.
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API (useful for local deployments).
+        temperature: Sampling temperature for the LLM.
+        max_tokens: Hard ceiling on tokens the model may spend.
+        max_words: Approximate word budget for the generated message.
+        timeout: Request timeout in seconds.
+        num_retries: Number of retries on transient failures.
+        verbose: If True, print LLM prompts and responses to stdout.
+        system_prompt: Custom system prompt for text generation.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to SAOMetaNegotiator.
+    """
+
+    def __init__(
+        self,
+        base_negotiator: SAONegotiator,
+        provider: str | None = None,
+        model: str | None = None,
+        *,
+        effort: str | None = None,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        max_words: int | None = None,
+        timeout: float | int | None = None,
+        num_retries: int | None = None,
+        verbose: bool = False,
+        system_prompt: str | None = None,
+        llm_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            base_negotiator=base_negotiator,
+            provider=provider,
+            model=model,
+            effort=effort,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            max_words=max_words,
+            timeout=timeout,
+            num_retries=num_retries,
+            enforce_base_offer=True,
+            enforce_base_response=True,
+            verbose=verbose,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+            **kwargs,
+        )
+
+
+class LLMNegotiatorWithMultipleRecommenders(LLMMetaNegotiator):
+    """A meta-negotiator that synthesizes one outcome from several recommenders.
+
+    Unlike :class:`LLMMetaNegotiator`, this wraps **several** named base
+    negotiators ("recommenders"). On each step it collects every recommender's
+    proposal (or response), feeds all the recommendations to the LLM, and the
+    LLM decides the single outcome (or response) to return. There are no
+    ``enforce_*`` flags: this class always produces its result from the
+    recommendations. When the LLM's output is invalid or unparseable it falls
+    back to the first valid recommendation for proposals, and to the majority
+    vote of the recommenders for responses (ties broken by first occurrence).
+
+    Args:
+        recommenders: The base negotiators that provide recommendations. At
+            least one is required.
+        recommender_names: Optional names for the recommenders, aligned with
+            ``recommenders``. If omitted, each recommender's own name is used.
+        provider: The LLM provider (None resolves from the environment).
+        model: The model name (None resolves from the environment).
+        effort: Optional reasoning effort.
+        api_key: API key for the provider (if required).
+        api_base: Base URL for the API (useful for local deployments).
+        temperature: Sampling temperature for the LLM.
+        max_tokens: Hard ceiling on tokens the model may spend.
+        max_words: Approximate word budget for the generated message.
+        timeout: Request timeout in seconds.
+        num_retries: Number of retries on transient failures.
+        verbose: If True, print LLM prompts and responses to stdout.
+        system_prompt: Custom system prompt for the LLM decision.
+        llm_kwargs: Additional keyword arguments passed to litellm.completion.
+        **kwargs: Additional arguments passed to SAOMetaNegotiator.
+    """
+
+    def __init__(
+        self,
+        recommenders: list[SAONegotiator],
+        recommender_names: list[str] | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        *,
+        effort: str | None = None,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        max_words: int | None = None,
+        timeout: float | int | None = None,
+        num_retries: int | None = None,
+        verbose: bool = False,
+        system_prompt: str | None = None,
+        llm_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        if not recommenders:
+            raise ValueError(
+                "LLMNegotiatorWithMultipleRecommenders requires >= 1 recommender"
+            )
+        if recommender_names is None:
+            recommender_names = [
+                neg.name or f"recommender_{i}" for i, neg in enumerate(recommenders)
+            ]
+        if len(recommender_names) != len(recommenders):
+            raise ValueError(
+                "recommender_names must have the same length as recommenders"
+            )
+        # Register all recommenders as children, bypassing the single-base
+        # constructor path of LLMMetaNegotiator.
+        SAOMetaNegotiator.__init__(
+            self,
+            negotiators=recommenders,
+            negotiator_names=recommender_names,
+            share_ufun=True,
+            share_nmi=True,
+            **kwargs,
+        )
+        resolved = resolve_llm_config(
+            type(self).__name__,
+            provider=provider,
+            model=model,
+            effort=effort,
+            api_key=api_key,
+            api_base=api_base,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            max_words=max_words,
+            timeout=timeout,
+            num_retries=num_retries,
+            default_provider=self.DEFAULT_PROVIDER or DEFAULT_PROVIDER,
+            default_model=self.DEFAULT_MODEL,
+            lock_provider=self.LOCK_PROVIDER,
+        )
+        self._store_llm_config(
+            resolved,
+            verbose=verbose,
+            system_prompt=system_prompt,
+            llm_kwargs=llm_kwargs,
+        )
+        # No enforce flags: this class always decides from recommendations.
+        self.enforce_base_offer = False
+        self.enforce_base_response = False
+        self._received_messages: list[dict[str, Any]] = []
+
+    @property
+    def recommenders(self) -> tuple[SAONegotiator, ...]:
+        """The recommender sub-negotiators, in registration order."""
+        return tuple(self._negotiators)
+
+    def propose(
+        self, state: SAOState, dest: str | None = None
+    ) -> Outcome | ExtendedOutcome | None:
+        """Synthesize a proposal from all recommenders via the LLM.
+
+        Args:
+            state: The current SAO state.
+            dest: The destination partner ID (if applicable).
+
+        Returns:
+            An ExtendedOutcome with the LLM-chosen outcome and text, falling
+            back to the first valid recommender outcome if the LLM fails.
+        """
+        received_text = self._extract_received_text(state)
+        recommendations: list[tuple[str, Outcome | None]] = []
+        for name, neg in zip(self.negotiator_names, self._negotiators, strict=True):
+            proposal = neg.propose(state, dest=dest)
+            outcome = (
+                proposal.outcome if isinstance(proposal, ExtendedOutcome) else proposal
+            )
+            recommendations.append((name, outcome))
+
+        decided_outcome, generated_text = self._decide_outcome(
+            state, recommendations, received_text
+        )
+        if decided_outcome is None:
+            # Fall back to the first non-None recommender outcome.
+            decided_outcome = next(
+                (o for _, o in recommendations if o is not None), None
+            )
+        if decided_outcome is None:
+            return None
+        return ExtendedOutcome(outcome=decided_outcome, data={"text": generated_text})
+
+    def respond(
+        self, state: SAOState, source: str | None = None
+    ) -> ResponseType | ExtendedResponseType:
+        """Synthesize a response from all recommenders via the LLM.
+
+        Args:
+            state: The current SAO state.
+            source: The source partner ID.
+
+        Returns:
+            An ExtendedResponseType with the LLM-chosen response and text,
+            falling back to the majority vote of the recommenders if the LLM
+            fails.
+        """
+        received_text = self._extract_received_text(state)
+        if received_text:
+            self._received_messages.append(
+                {
+                    "step": state.step,
+                    "source": source,
+                    "text": received_text,
+                    "offer": state.current_offer,
+                }
+            )
+        recommendations: list[tuple[str, ResponseType]] = []
+        response_types: list[ResponseType] = []
+        for name, neg in zip(self.negotiator_names, self._negotiators, strict=True):
+            base_response = neg.respond(state, source=source)
+            response_type = (
+                base_response.response
+                if isinstance(base_response, ExtendedResponseType)
+                else base_response
+            )
+            recommendations.append((name, response_type))
+            response_types.append(response_type)
+
+        decided_response, generated_text = self._decide_response(
+            state, recommendations, received_text
+        )
+        if decided_response is None:
+            decided_response = self._majority_response(response_types)
+        return ExtendedResponseType(
+            response=decided_response, data={"text": generated_text}
+        )
+
+    @staticmethod
+    def _majority_response(response_types: list[ResponseType]) -> ResponseType:
+        """Pick the majority response type, breaking ties by first occurrence.
+
+        Args:
+            response_types: The recommenders' response types, in order.
+
+        Returns:
+            The majority response type, or REJECT_OFFER for an empty list.
+        """
+        if not response_types:
+            return ResponseType.REJECT_OFFER
+        counts: dict[ResponseType, int] = {}
+        for rt in response_types:
+            counts[rt] = counts.get(rt, 0) + 1
+        best = response_types[0]
+        best_count = 0
+        seen: set[ResponseType] = set()
+        for rt in response_types:
+            if rt in seen:
+                continue
+            seen.add(rt)
+            if counts[rt] > best_count:
+                best = rt
+                best_count = counts[rt]
+        return best
