@@ -41,6 +41,7 @@ from negmas_llm.config import (
     resolve_llm_config,
 )
 from negmas_llm.tags import process_prompt as _process_prompt
+from negmas_llm.ufun_tools import UFUN_TOOL_SPECS, run_ufun_tool
 
 if TYPE_CHECKING:
     from litellm.types.utils import Choices
@@ -68,6 +69,25 @@ __all__ = [
     "DeepSeekNegotiator",
     "DashScopeNegotiator",
 ]
+
+
+def _assistant_tool_call_entry(message: Any, tool_calls: Any) -> dict[str, Any]:
+    """Build an OpenAI-format assistant message carrying tool-call requests."""
+    return {
+        "role": "assistant",
+        "content": message.content or "",
+        "tool_calls": [
+            {
+                "id": tc.id,
+                "type": getattr(tc, "type", "function") or "function",
+                "function": {
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments,
+                },
+            }
+            for tc in tool_calls
+        ],
+    }
 
 
 def _dedent(text: str) -> str:
@@ -278,6 +298,10 @@ _STRUCTURED_OUTPUT_PROVIDERS: frozenset[str] = frozenset(
     }
 )
 
+# Maximum number of consecutive tool-call rounds (see `use_ufun_tools`) before
+# forcing a final answer.
+_MAX_TOOL_ROUNDS = 5
+
 # Headers required for GitHub Copilot (simulates IDE client)
 _GITHUB_COPILOT_HEADERS: dict[str, str] = {
     "editor-version": "vscode/1.85.1",
@@ -357,6 +381,19 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         use_structured_output: If True (default), use structured output/JSON mode
             when the provider supports it. This guarantees valid JSON responses.
             Set to False to disable and rely on prompt-based JSON extraction.
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process (evaluate an outcome, min/max,
+            best/worst, and the inverter operations some/all/one_in/best_in/
+            worst_in -- see :mod:`negmas_llm.ufun_tools`), instead of leaving
+            it to estimate utilities from the prompt. Default is False: not
+            every provider/model handles tool-calling reliably, and enabling
+            it forces JSON-schema structured output off for this negotiator
+            (tool-calling and a strict ``response_format`` cannot be combined
+            in the same request; the existing regex-based JSON extraction in
+            :meth:`_parse_llm_response` is used instead). Each round the tool
+            calls happen fresh (they are not added to the stored conversation
+            history), so the LLM re-derives utilities every time it is asked
+            to decide.
         include_reasoning: If True, include the LLM's reasoning in the response
             data sent to the partner. Default is False (reasoning is not shared).
         raise_on_parsing_error: If True, raise a ValueError when the LLM returns
@@ -413,6 +450,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         timeout: float | int | None = None,
         num_retries: int | None = None,
         use_structured_output: bool = True,
+        use_ufun_tools: bool = False,
         include_reasoning: bool = False,
         raise_on_parsing_error: bool = False,
         verbose: bool = False,
@@ -473,6 +511,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         self.timeout: float | int | None = resolved.timeout
         self.num_retries: int | None = resolved.num_retries
         self.use_structured_output = use_structured_output
+        self.use_ufun_tools = use_ufun_tools
         self.include_reasoning = include_reasoning
         self.raise_on_parsing_error = raise_on_parsing_error
         self.verbose = verbose
@@ -634,9 +673,13 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             The LLM response text.
         """
         cfg = effective_llm_config(self, model_type)
+        # Utility-function tool-use is offered only when enabled and a ufun is
+        # actually available to compute against.
+        tools_enabled = self.use_ufun_tools and self.ufun is not None
+        call_messages = list(messages)
         kwargs: dict[str, Any] = {
             "model": litellm_model_string(cfg.provider, cfg.model),
-            "messages": messages,
+            "messages": call_messages,
             **self.llm_kwargs,
         }
         # Model-dependent parameters: an explicit constructor/per-call value
@@ -661,8 +704,16 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         if cfg.num_retries is not None:
             kwargs["num_retries"] = cfg.num_retries
 
-        # Add structured output / JSON mode if requested and supported
-        if require_json and self.use_structured_output:
+        if tools_enabled:
+            # A strict JSON-schema response_format and function tools cannot be
+            # combined in the same request: a provider honoring the strict
+            # schema emits schema-conforming content immediately and never
+            # emits tool_calls. Tool-use wins here; ``_parse_llm_response``'s
+            # regex-based JSON extraction (already used for providers without
+            # structured-output support) covers the final answer instead.
+            kwargs["tools"] = UFUN_TOOL_SPECS
+        elif require_json and self.use_structured_output:
+            # Add structured output / JSON mode if requested and supported
             if _supports_structured_output(cfg.provider):
                 # Use full JSON schema for providers that support it
                 kwargs["response_format"] = _NEGOTIATION_RESPONSE_SCHEMA
@@ -692,14 +743,44 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
                 console.print(msg["content"])
                 console.print()
 
-        # Time the LLM call
+        # Time the LLM call(s). When tool-use is enabled this loops: run any
+        # requested ufun tools in-process and feed results back until the
+        # model gives a final (non-tool-call) answer.
         start_time = time.perf_counter()
-        response = litellm.completion(**kwargs)
-        elapsed_time = time.perf_counter() - start_time
+        response_text = ""
+        for _round in range(_MAX_TOOL_ROUNDS + 1):
+            response = litellm.completion(**kwargs)
+            model_response = cast(ModelResponse, response)
+            choices = cast(list["Choices"], model_response.choices)
+            message = choices[0].message
+            tool_calls = getattr(message, "tool_calls", None) if tools_enabled else None
 
-        model_response = cast(ModelResponse, response)
-        choices = cast(list["Choices"], model_response.choices)
-        response_text = choices[0].message.content or ""
+            if tool_calls:
+                call_messages.append(_assistant_tool_call_entry(message, tool_calls))
+                for tc in tool_calls:
+                    try:
+                        arguments = json.loads(tc.function.arguments or "{}")
+                    except json.JSONDecodeError:
+                        arguments = {}
+                    result = run_ufun_tool(self.ufun, tc.function.name, arguments)  # type: ignore[arg-type]
+                    if self.verbose and console:
+                        console.print(
+                            f"[dim green]ufun tool {tc.function.name}"
+                            f"({tc.function.arguments}) -> {result}[/dim green]"
+                        )
+                    call_messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "name": tc.function.name,
+                            "content": json.dumps(result),
+                        }
+                    )
+                continue
+
+            response_text = message.content or ""
+            break
+        elapsed_time = time.perf_counter() - start_time
 
         # Print response if verbose mode is enabled (using rich)
         if self.verbose and console:

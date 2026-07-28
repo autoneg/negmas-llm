@@ -36,8 +36,13 @@ from negmas_llm.config import (
     resolve_llm_config,
 )
 from negmas_llm.tags import process_prompt
+from negmas_llm.ufun_tools import UFUN_TOOL_SPECS, run_ufun_tool
 
 DEFAULT_OLLAMA_MODEL = DEFAULT_MODELS.get("ollama", "qwen3:4b-instruct")
+
+# Maximum number of consecutive tool-call rounds (see `use_ufun_tools`) before
+# forcing a final answer.
+_MAX_TOOL_ROUNDS = 5
 
 if TYPE_CHECKING:
     from litellm.types.utils import Choices
@@ -81,6 +86,25 @@ def _dedent(text: str) -> str:
     if text.startswith("\n"):
         text = text[1:]
     return textwrap.dedent(text)
+
+
+def _assistant_tool_call_entry(message: Any, tool_calls: Any) -> dict[str, Any]:
+    """Build an OpenAI-format assistant message carrying tool-call requests."""
+    return {
+        "role": "assistant",
+        "content": message.content or "",
+        "tool_calls": [
+            {
+                "id": tc.id,
+                "type": getattr(tc, "type", "function") or "function",
+                "function": {
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments,
+                },
+            }
+            for tc in tool_calls
+        ],
+    }
 
 
 def is_meta_negotiator_available() -> bool:
@@ -148,6 +172,24 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         verbose: If True, print LLM prompts and responses to stdout. Useful for
             debugging and understanding the LLM's text generation process.
             Default is False.
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process (evaluate an outcome, min/max,
+            best/worst, and the inverter operations some/all/one_in/best_in/
+            worst_in -- see :mod:`negmas_llm.ufun_tools`), instead of leaving
+            it to estimate utilities from the prompt. Applies to every LLM
+            call this negotiator makes (text generation and, when
+            ``enforce_base_offer``/``enforce_base_response`` is False, the
+            outcome/response decision). Default is False: not every
+            provider/model handles tool-calling reliably, and it requires
+            ``self.ufun`` to be set to have any effect. ``share_ufun=True``
+            (the default) propagates *this* negotiator's own ufun DOWN to the
+            base negotiator on join -- not the other way around -- so give
+            the ufun to this constructor (``ufun=``/``preferences=``, which
+            lands in ``**kwargs``) or via ``mechanism.add(negotiator,
+            ufun=...)``; a ufun given only to ``base_negotiator`` does not
+            reach ``self.ufun`` and tools will not fire. Tool calls are not
+            added to the stored conversation history, so they happen fresh on
+            every call.
         system_prompt: Custom system prompt for text generation.
             If not provided, a default prompt focused on generating
             persuasive negotiation messages is used.
@@ -199,6 +241,7 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         enforce_base_offer: bool = True,
         enforce_base_response: bool = True,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -233,6 +276,7 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         self._store_llm_config(
             resolved,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -247,6 +291,7 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         resolved: Any,
         *,
         verbose: bool,
+        use_ufun_tools: bool = False,
         system_prompt: str | None,
         llm_kwargs: dict[str, Any] | None,
     ) -> None:
@@ -260,6 +305,12 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         Args:
             resolved: The resolved LLM config from :func:`resolve_llm_config`.
             verbose: If True, print LLM prompts and responses to stdout.
+            use_ufun_tools: If True, offer the LLM function tools that compute
+                its own utility function in-process (see
+                :mod:`negmas_llm.ufun_tools`) instead of estimating it from the
+                prompt. Requires ``self.ufun`` to be set on *this* negotiator
+                (``share_ufun=True``, the default, then propagates it down to
+                the base negotiator on join -- not the other way around).
             system_prompt: Custom system prompt for text generation (if any).
             llm_kwargs: Additional keyword arguments passed to litellm.completion.
         """
@@ -274,6 +325,7 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         self.timeout: float | int | None = resolved.timeout
         self.num_retries: int | None = resolved.num_retries
         self.verbose = verbose
+        self.use_ufun_tools = use_ufun_tools
         self._custom_system_prompt = system_prompt
         self.llm_kwargs = llm_kwargs or {}
 
@@ -525,9 +577,13 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
             processed_messages.append({**msg, "content": processed_content})
 
         cfg = effective_llm_config(self, model_type)
+        # Utility-function tool-use is offered only when enabled and a ufun is
+        # actually available to compute against.
+        tools_enabled = self.use_ufun_tools and self.ufun is not None
+        call_messages = list(processed_messages)
         kwargs: dict[str, Any] = {
             "model": litellm_model_string(cfg.provider, cfg.model),
-            "messages": processed_messages,
+            "messages": call_messages,
             **self.llm_kwargs,
         }
         # Model-dependent parameters: explicit values win; None resolves a
@@ -550,6 +606,9 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         if cfg.num_retries is not None:
             kwargs["num_retries"] = cfg.num_retries
 
+        if tools_enabled:
+            kwargs["tools"] = UFUN_TOOL_SPECS
+
         # Print prompt if verbose mode is enabled (using rich)
         console = Console() if self.verbose else None
         if self.verbose and console:
@@ -566,14 +625,44 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
                 console.print(msg["content"])
                 console.print()
 
-        # Time the LLM call
+        # Time the LLM call(s). When tool-use is enabled this loops: run any
+        # requested ufun tools in-process and feed results back until the
+        # model gives a final (non-tool-call) answer.
         start_time = time.perf_counter()
-        response = litellm.completion(**kwargs)
-        elapsed_time = time.perf_counter() - start_time
+        response_text = ""
+        for _round in range(_MAX_TOOL_ROUNDS + 1):
+            response = litellm.completion(**kwargs)
+            model_response = cast(ModelResponse, response)
+            choices = cast(list["Choices"], model_response.choices)
+            message = choices[0].message
+            tool_calls = getattr(message, "tool_calls", None) if tools_enabled else None
 
-        model_response = cast(ModelResponse, response)
-        choices = cast(list["Choices"], model_response.choices)
-        response_text = choices[0].message.content or ""
+            if tool_calls:
+                call_messages.append(_assistant_tool_call_entry(message, tool_calls))
+                for tc in tool_calls:
+                    try:
+                        arguments = json.loads(tc.function.arguments or "{}")
+                    except json.JSONDecodeError:
+                        arguments = {}
+                    result = run_ufun_tool(self.ufun, tc.function.name, arguments)  # type: ignore[arg-type]
+                    if self.verbose and console:
+                        console.print(
+                            f"[dim green]ufun tool {tc.function.name}"
+                            f"({tc.function.arguments}) -> {result}[/dim green]"
+                        )
+                    call_messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "name": tc.function.name,
+                            "content": json.dumps(result),
+                        }
+                    )
+                continue
+
+            response_text = message.content or ""
+            break
+        elapsed_time = time.perf_counter() - start_time
 
         # Print response if verbose mode is enabled (using rich)
         if self.verbose and console:
@@ -1076,6 +1165,9 @@ class LLMAspirationNegotiator(LLMMetaNegotiator):
             a model-appropriate budget (larger for reasoning/thinking models so
             hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1091,6 +1183,7 @@ class LLMAspirationNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1107,6 +1200,7 @@ class LLMAspirationNegotiator(LLMMetaNegotiator):
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1130,6 +1224,9 @@ class LLMBoulwareTBNegotiator(LLMMetaNegotiator):
             a model-appropriate budget (larger for reasoning/thinking models so
             hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1145,6 +1242,7 @@ class LLMBoulwareTBNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1161,6 +1259,7 @@ class LLMBoulwareTBNegotiator(LLMMetaNegotiator):
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1184,6 +1283,9 @@ class LLMConcederTBNegotiator(LLMMetaNegotiator):
             a model-appropriate budget (larger for reasoning/thinking models so
             hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1199,6 +1301,7 @@ class LLMConcederTBNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1215,6 +1318,7 @@ class LLMConcederTBNegotiator(LLMMetaNegotiator):
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1237,6 +1341,9 @@ class LLMLinearTBNegotiator(LLMMetaNegotiator):
             a model-appropriate budget (larger for reasoning/thinking models so
             hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1252,6 +1359,7 @@ class LLMLinearTBNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1268,6 +1376,7 @@ class LLMLinearTBNegotiator(LLMMetaNegotiator):
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1290,6 +1399,9 @@ class LLMTimeBasedConcedingNegotiator(LLMMetaNegotiator):
             a model-appropriate budget (larger for reasoning/thinking models so
             hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1305,6 +1417,7 @@ class LLMTimeBasedConcedingNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1321,6 +1434,7 @@ class LLMTimeBasedConcedingNegotiator(LLMMetaNegotiator):
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1343,6 +1457,9 @@ class LLMTimeBasedNegotiator(LLMMetaNegotiator):
             a model-appropriate budget (larger for reasoning/thinking models so
             hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1358,6 +1475,7 @@ class LLMTimeBasedNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1374,6 +1492,7 @@ class LLMTimeBasedNegotiator(LLMMetaNegotiator):
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1396,6 +1515,9 @@ class LLMNiceNegotiator(LLMMetaNegotiator):
             a model-appropriate budget (larger for reasoning/thinking models so
             hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1411,6 +1533,7 @@ class LLMNiceNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1427,6 +1550,7 @@ class LLMNiceNegotiator(LLMMetaNegotiator):
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1448,6 +1572,9 @@ class LLMToughNegotiator(LLMMetaNegotiator):
             a model-appropriate budget (larger for reasoning/thinking models so
             hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1463,6 +1590,7 @@ class LLMToughNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1479,6 +1607,7 @@ class LLMToughNegotiator(LLMMetaNegotiator):
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1501,6 +1630,9 @@ class LLMNaiveTitForTatNegotiator(LLMMetaNegotiator):
             a model-appropriate budget (larger for reasoning/thinking models so
             hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1516,6 +1648,7 @@ class LLMNaiveTitForTatNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1532,6 +1665,7 @@ class LLMNaiveTitForTatNegotiator(LLMMetaNegotiator):
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1554,6 +1688,9 @@ class LLMRandomNegotiator(LLMMetaNegotiator):
             a model-appropriate budget (larger for reasoning/thinking models so
             hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1569,6 +1706,7 @@ class LLMRandomNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1585,6 +1723,7 @@ class LLMRandomNegotiator(LLMMetaNegotiator):
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1607,6 +1746,9 @@ class LLMRandomAlwaysAcceptingNegotiator(LLMMetaNegotiator):
             a model-appropriate budget (larger for reasoning/thinking models so
             hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1622,6 +1764,7 @@ class LLMRandomAlwaysAcceptingNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1638,6 +1781,7 @@ class LLMRandomAlwaysAcceptingNegotiator(LLMMetaNegotiator):
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1659,6 +1803,9 @@ class LLMCABNegotiator(LLMMetaNegotiator):
             a model-appropriate budget (larger for reasoning/thinking models so
             hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1674,6 +1821,7 @@ class LLMCABNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1690,6 +1838,7 @@ class LLMCABNegotiator(LLMMetaNegotiator):
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1711,6 +1860,9 @@ class LLMCANNegotiator(LLMMetaNegotiator):
             a model-appropriate budget (larger for reasoning/thinking models so
             hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1726,6 +1878,7 @@ class LLMCANNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1742,6 +1895,7 @@ class LLMCANNegotiator(LLMMetaNegotiator):
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1763,6 +1917,9 @@ class LLMCARNegotiator(LLMMetaNegotiator):
             a model-appropriate budget (larger for reasoning/thinking models so
             hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1778,6 +1935,7 @@ class LLMCARNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1794,6 +1952,7 @@ class LLMCARNegotiator(LLMMetaNegotiator):
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1815,6 +1974,9 @@ class LLMMiCRONegotiator(LLMMetaNegotiator):
             a model-appropriate budget (larger for reasoning/thinking models so
             hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1830,6 +1992,7 @@ class LLMMiCRONegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1846,6 +2009,7 @@ class LLMMiCRONegotiator(LLMMetaNegotiator):
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1867,6 +2031,9 @@ class LLMFastMiCRONegotiator(LLMMetaNegotiator):
             a model-appropriate budget (larger for reasoning/thinking models so
             hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1882,6 +2049,7 @@ class LLMFastMiCRONegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1898,6 +2066,7 @@ class LLMFastMiCRONegotiator(LLMMetaNegotiator):
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1919,6 +2088,9 @@ class LLMUtilBasedNegotiator(LLMMetaNegotiator):
             a model-appropriate budget (larger for reasoning/thinking models so
             hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1934,6 +2106,7 @@ class LLMUtilBasedNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1950,6 +2123,7 @@ class LLMUtilBasedNegotiator(LLMMetaNegotiator):
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -1971,6 +2145,9 @@ class LLMWARNegotiator(LLMMetaNegotiator):
             a model-appropriate budget (larger for reasoning/thinking models so
             hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -1986,6 +2163,7 @@ class LLMWARNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -2002,6 +2180,7 @@ class LLMWARNegotiator(LLMMetaNegotiator):
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -2023,6 +2202,9 @@ class LLMWANNegotiator(LLMMetaNegotiator):
             a model-appropriate budget (larger for reasoning/thinking models so
             hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -2038,6 +2220,7 @@ class LLMWANNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -2054,6 +2237,7 @@ class LLMWANNegotiator(LLMMetaNegotiator):
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -2075,6 +2259,9 @@ class LLMWABNegotiator(LLMMetaNegotiator):
             a model-appropriate budget (larger for reasoning/thinking models so
             hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -2090,6 +2277,7 @@ class LLMWABNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -2106,6 +2294,7 @@ class LLMWABNegotiator(LLMMetaNegotiator):
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -2127,6 +2316,9 @@ class LLMLimitedOutcomesNegotiator(LLMMetaNegotiator):
             a model-appropriate budget (larger for reasoning/thinking models so
             hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -2142,6 +2334,7 @@ class LLMLimitedOutcomesNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -2158,6 +2351,7 @@ class LLMLimitedOutcomesNegotiator(LLMMetaNegotiator):
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -2179,6 +2373,9 @@ class LLMLimitedOutcomesAcceptor(LLMMetaNegotiator):
             a model-appropriate budget (larger for reasoning/thinking models so
             hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -2194,6 +2391,7 @@ class LLMLimitedOutcomesAcceptor(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -2210,6 +2408,7 @@ class LLMLimitedOutcomesAcceptor(LLMMetaNegotiator):
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -2232,6 +2431,9 @@ class LLMHybridNegotiator(LLMMetaNegotiator):
             a model-appropriate budget (larger for reasoning/thinking models so
             hidden deliberation cannot starve the visible response).
         verbose: If True, print LLM prompts and responses to stdout (default: False).
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to the base negotiator.
@@ -2248,6 +2450,7 @@ class LLMHybridNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -2264,6 +2467,7 @@ class LLMHybridNegotiator(LLMMetaNegotiator):
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
@@ -2301,6 +2505,9 @@ class LLMNegotiatorWithRecommender(LLMMetaNegotiator):
         timeout: Request timeout in seconds.
         num_retries: Number of retries on transient failures.
         verbose: If True, print LLM prompts and responses to stdout.
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for the LLM decision.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to SAOMetaNegotiator.
@@ -2321,6 +2528,7 @@ class LLMNegotiatorWithRecommender(LLMMetaNegotiator):
         timeout: float | int | None = None,
         num_retries: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -2340,6 +2548,7 @@ class LLMNegotiatorWithRecommender(LLMMetaNegotiator):
             enforce_base_offer=False,
             enforce_base_response=False,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
             **kwargs,
@@ -2368,6 +2577,9 @@ class LLMEnhancedNegotiator(LLMMetaNegotiator):
         timeout: Request timeout in seconds.
         num_retries: Number of retries on transient failures.
         verbose: If True, print LLM prompts and responses to stdout.
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for text generation.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to SAOMetaNegotiator.
@@ -2388,6 +2600,7 @@ class LLMEnhancedNegotiator(LLMMetaNegotiator):
         timeout: float | int | None = None,
         num_retries: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -2407,6 +2620,7 @@ class LLMEnhancedNegotiator(LLMMetaNegotiator):
             enforce_base_offer=True,
             enforce_base_response=True,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
             **kwargs,
@@ -2441,6 +2655,9 @@ class LLMNegotiatorWithMultipleRecommenders(LLMMetaNegotiator):
         timeout: Request timeout in seconds.
         num_retries: Number of retries on transient failures.
         verbose: If True, print LLM prompts and responses to stdout.
+        use_ufun_tools: If True, offer the LLM function tools that compute its
+            own utility function in-process instead of estimating it from the
+            prompt (default: False). See :class:`LLMMetaNegotiator`.
         system_prompt: Custom system prompt for the LLM decision.
         llm_kwargs: Additional keyword arguments passed to litellm.completion.
         **kwargs: Additional arguments passed to SAOMetaNegotiator.
@@ -2462,6 +2679,7 @@ class LLMNegotiatorWithMultipleRecommenders(LLMMetaNegotiator):
         timeout: float | int | None = None,
         num_retries: int | None = None,
         verbose: bool = False,
+        use_ufun_tools: bool = False,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -2507,6 +2725,7 @@ class LLMNegotiatorWithMultipleRecommenders(LLMMetaNegotiator):
         self._store_llm_config(
             resolved,
             verbose=verbose,
+            use_ufun_tools=use_ufun_tools,
             system_prompt=system_prompt,
             llm_kwargs=llm_kwargs,
         )
