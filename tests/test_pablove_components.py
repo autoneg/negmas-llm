@@ -15,7 +15,14 @@ from negmas.gb.components.offering import TimeBasedOfferingPolicy
 from negmas.preferences import LinearAdditiveUtilityFunction as LUFun
 from negmas.sao import AspirationNegotiator, ResponseType, SAOMechanism
 
-from negmas_llm.pablove import TurnContext, Utterance, make_pablove
+from attrs import define
+
+from negmas_llm.pablove import (
+    Language,
+    TurnContext,
+    Utterance,
+    make_pablove,
+)
 from negmas_llm.pablove_components import (
     LLMLanguage,
     LLMPerception,
@@ -229,3 +236,207 @@ def test_og_narrator_is_a_pablove_configuration(domain):
     mine = [t for t in m.full_trace if t.negotiator == og_narrator.id]
     assert all(t.offer is None or os_.is_valid(t.offer) for t in mine)
     assert any(t.text for t in mine), "the narrator never spoke"
+
+
+# ---------------------------------------------------------------------------
+# LLM versions of the BOA slots
+# ---------------------------------------------------------------------------
+
+
+from negmas_llm.pablove_components import (  # noqa: E402
+    LLMAcceptance,
+    LLMEnding,
+    LLMOffering,
+    LLMUFunModel,
+    LLMValidation,
+    snap_outcome,
+)
+
+
+@pytest.mark.parametrize(
+    "raw,expected_valid",
+    [
+        ([150, 2], True),          # already valid
+        (["150", "2"], True),      # strings cast
+        ([175, 2], True),          # off-grid numeric snaps to nearest
+        ({"quantity": 2, "price": 100}, True),   # dict, wrong order
+        ({"PRICE": 100, "QUANTITY": 2}, True),   # case-insensitive keys
+        ([150], False),            # wrong arity
+        ("nonsense", False),
+        (None, False),
+    ],
+)
+def test_snap_outcome_repairs_what_it_can(domain, raw, expected_valid):
+    os_, _, _ = domain
+    result = snap_outcome(os_, raw)
+    assert (result is not None and os_.is_valid(result)) is expected_valid
+
+
+def test_llm_offering_always_emits_a_valid_rational_outcome(domain):
+    """Whatever the model says, the offer is valid and beats no deal."""
+    os_, u1, u2 = domain
+    for payload in (
+        json.dumps({"outcome": [175, 2]}),      # off-grid
+        json.dumps({"outcome": ["nope"]}),      # wrong arity
+        "not json at all",                      # unparseable
+    ):
+        offering = LLMOffering()
+        neg = make_pablove(acceptance=AcceptTop(0), offering=offering, ufun=u1)
+        with patch("litellm.completion", side_effect=lambda *a, **k: _mock(payload)):
+            m = _run(neg, os_, u2, n_steps=4)
+        mine = [t for t in m.full_trace if t.negotiator == neg.id and t.offer]
+        assert mine, "never offered"
+        for t in mine:
+            assert os_.is_valid(t.offer)
+            assert float(u1(t.offer)) > u1.reserved_value
+
+
+def test_llm_offering_counts_its_own_rescues(domain):
+    """How often a model needs rescuing is a result, so it is counted."""
+    os_, u1, u2 = domain
+    offering = LLMOffering()
+    neg = make_pablove(acceptance=AcceptTop(0), offering=offering, ufun=u1)
+    with patch("litellm.completion", side_effect=lambda *a, **k: _mock("garbage")):
+        _run(neg, os_, u2, n_steps=4)
+    assert offering.stats["calls"] > 0
+    assert offering.stats["fallback"] == offering.stats["calls"]
+
+
+def test_llm_acceptance_vetoes_an_irrational_accept(domain):
+    """Accepting below the reserved value is not a judgement call."""
+    os_, u1, _ = domain
+    worst = min(os_.enumerate(), key=u1)
+    u1.reserved_value = float(u1(worst)) + 1e-9
+    acceptance = LLMAcceptance()
+    neg = make_pablove(acceptance=acceptance, offering=TimeBasedOfferingPolicy(), ufun=u1)
+    m = SAOMechanism(outcome_space=os_, n_steps=4)
+    m.add(neg)
+    m.add(AspirationNegotiator(name="opp", ufun=u1))
+    with patch("litellm.completion",
+               side_effect=lambda *a, **k: _mock(json.dumps({"decision": "accept"}))):
+        response = acceptance(m.state, worst, None)
+    assert response == ResponseType.REJECT_OFFER
+    assert acceptance.stats["vetoed"] == 1
+
+
+def test_llm_acceptance_accepts_when_rational(domain):
+    os_, u1, _ = domain
+    best = max(os_.enumerate(), key=u1)
+    u1.reserved_value = 0.0
+    acceptance = LLMAcceptance()
+    neg = make_pablove(acceptance=acceptance, offering=TimeBasedOfferingPolicy(), ufun=u1)
+    m = SAOMechanism(outcome_space=os_, n_steps=4)
+    m.add(neg)
+    m.add(AspirationNegotiator(name="opp", ufun=u1))
+    with patch("litellm.completion",
+               side_effect=lambda *a, **k: _mock(json.dumps({"decision": "accept"}))):
+        assert acceptance(m.state, best, None) == ResponseType.ACCEPT_OFFER
+
+
+def test_llm_ufun_model_learns_weights_and_scores_outcomes(domain):
+    """The text-conditioned opponent model: beliefs from behaviour."""
+    os_, u1, u2 = domain
+    model = LLMUFunModel(refresh_every=1)
+    neg = make_pablove(
+        acceptance=AcceptTop(0), offering=TimeBasedOfferingPolicy(), model=model, ufun=u1
+    )
+    payload = json.dumps(
+        {
+            "weights": {"price": 3.0, "quantity": 1.0},   # unnormalized on purpose
+            "values": {"price": {"200": 1.0, "150": 0.5, "100": 0.0},
+                       "quantity": {"1": 1.0, "2": 0.5, "3": 0.0}},
+        }
+    )
+    with patch("litellm.completion", side_effect=lambda *a, **k: _mock(payload)):
+        _run(neg, os_, u2, n_steps=6)
+    assert model.weights, "no belief was formed"
+    assert abs(sum(model.weights.values()) - 1.0) < 1e-6, "weights must normalize"
+    # a seller-favourable outcome must score above a buyer-favourable one
+    assert model.eval((200, 1)) > model.eval((100, 3))
+
+
+def test_ufun_model_has_no_belief_before_its_first_estimate(domain):
+    """Zero is the honest score for 'no belief yet'."""
+    os_, u1, _ = domain
+    model = LLMUFunModel()
+    assert model.eval((150, 2)) == 0.0
+
+
+def test_llm_validation_flags_and_repairs_inconsistent_text(domain):
+    os_, u1, u2 = domain
+    validation = LLMValidation()
+
+    @define
+    class LyingLanguage(Language):
+        def realize(self, ctx: TurnContext) -> Utterance:
+            return Utterance(text="I am offering you everything you asked for.")
+
+    neg = make_pablove(
+        acceptance=AcceptTop(0),
+        offering=TimeBasedOfferingPolicy(),
+        language=LyingLanguage(),
+        validation=validation,
+        ufun=u1,
+    )
+    verdict = json.dumps(
+        {"consistent": False, "issues": ["claims terms not in the offer"],
+         "rewritten": "Here is my proposal."}
+    )
+    with patch("litellm.completion", side_effect=lambda *a, **k: _mock(verdict)):
+        _run(neg, os_, u2, n_steps=4)
+    assert validation.stats["inconsistent"] > 0
+    repaired = [t for t in neg.turns if t.revalidations]
+    assert repaired and all(t.utterance.text == "Here is my proposal." for t in repaired)
+
+
+def test_llm_ending_will_not_walk_away_from_a_good_offer(domain):
+    """An end decision is vetoed when the standing offer beats no deal."""
+    os_, u1, _ = domain
+    best = max(os_.enumerate(), key=u1)
+    u1.reserved_value = 0.0
+    ending = LLMEnding(min_time=0.0)
+    neg = make_pablove(
+        acceptance=AcceptTop(0), offering=TimeBasedOfferingPolicy(),
+        ending=ending, ufun=u1,
+    )
+    state = SAOMechanism(outcome_space=os_, n_steps=4).state
+    ctx = TurnContext(entry="respond", state=state, their_offer=best)
+    neg._turn = ctx
+    with patch("litellm.completion",
+               side_effect=lambda *a, **k: _mock(json.dumps({"end": True, "why": "bored"}))):
+        decision = ending.should_end(ctx)
+    assert not decision.end and "vetoed" in decision.reason
+    assert ending.stats["vetoed"] == 1
+
+
+def test_llm_ending_is_not_consulted_early(domain):
+    """Walking away in the opening rounds is almost never right."""
+    os_, u1, _ = domain
+    ending = LLMEnding(min_time=0.5)
+    state = SAOMechanism(outcome_space=os_, n_steps=10).state
+    ctx = TurnContext(entry="respond", state=state, their_offer=(100, 1))
+    with patch("litellm.completion", side_effect=AssertionError("must not be asked")):
+        assert not ending.should_end(ctx).end
+    assert ending.stats["asked"] == 0
+
+
+# ---------------------------------------------------------------------------
+# The point of per-component config: different models for different jobs
+# ---------------------------------------------------------------------------
+
+
+def test_each_component_resolves_its_own_model(monkeypatch):
+    """`NEGMAS_LLM_<ClassName>_MODEL` routes each component independently."""
+    monkeypatch.setenv("NEGMAS_LLM_LLMOffering_MODEL", "big-strategy-model")
+    monkeypatch.setenv("NEGMAS_LLM_LLMPerception_MODEL", "small-fast-model")
+    monkeypatch.setenv("NEGMAS_LLM_MODEL", "default-model")
+
+    assert LLMOffering()._config().model == "big-strategy-model"
+    assert LLMPerception()._config().model == "small-fast-model"
+    # anything without a per-class override falls back to the global default
+    assert LLMLanguage()._config().model == "default-model"
+
+
+def test_explicit_argument_beats_the_environment(monkeypatch):
+    monkeypatch.setenv("NEGMAS_LLM_LLMOffering_MODEL", "from-env")
+    assert LLMOffering(model="explicit")._config().model == "explicit"

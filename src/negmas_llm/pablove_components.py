@@ -27,6 +27,8 @@ from typing import Any
 
 import litellm
 from attrs import define, field
+from negmas.gb.components import AcceptancePolicy, OfferingPolicy
+from negmas.gb.components.models.ufun import UFunModel
 from negmas.outcomes import ExtendedOutcome
 
 from negmas_llm.common import (
@@ -39,11 +41,15 @@ from negmas_llm.common import (
 )
 from negmas_llm.config import DEFAULT_PROVIDER, resolve_llm_config
 from negmas_llm.pablove import (
+    Ending,
+    EndingDecision,
     Language,
     Perception,
     PerceptionResult,
     TurnContext,
     Utterance,
+    Validation,
+    ValidationResult,
 )
 
 __all__ = [
@@ -51,6 +57,13 @@ __all__ = [
     "TemplateLanguage",
     "LLMLanguage",
     "LLMPerception",
+    "LLMOffering",
+    "LLMAcceptance",
+    "LLMUFunModel",
+    "LLMValidation",
+    "LLMEnding",
+    "snap_outcome",
+    "outcome_space_of",
     "DEFAULT_LANGUAGE_PROMPT",
     "DEFAULT_PERCEPTION_PROMPT",
 ]
@@ -379,3 +392,566 @@ class LLMPerception(LLMComponent, Perception):
             source="classified",
             text=text,
         )
+
+
+# =============================================================================
+# Outcome validity — shared by every component that emits an outcome
+# =============================================================================
+
+
+def snap_outcome(outcome_space: Any, raw: Any, issue_index: dict[str, int] | None = None):
+    """Coerce whatever a model returned into a valid outcome, or ``None``.
+
+    Only structurally valid outcomes can ever be agreed on, so a near-miss
+    should be repaired rather than discarded: numeric values snap to the
+    nearest allowed value, categorical values match case-insensitively, and a
+    dict keyed by issue name is reordered. Returns ``None`` when nothing
+    salvageable remains.
+
+    Args:
+        outcome_space: The negotiation outcome space.
+        raw: The model's proposed outcome — list, tuple or dict.
+        issue_index: Optional precomputed issue-name -> position map.
+
+    Returns:
+        A valid outcome tuple, or ``None``.
+    """
+    issues = list(getattr(outcome_space, "issues", None) or [])
+    if raw is None or not issues:
+        return None
+    if isinstance(raw, dict):
+        index = issue_index or {str(i.name): n for n, i in enumerate(issues)}
+        values: list[Any] = [None] * len(issues)
+        for key, value in raw.items():
+            pos = index.get(str(key))
+            if pos is None:
+                for name, p in index.items():
+                    if name.lower() == str(key).lower():
+                        pos = p
+                        break
+            if pos is not None:
+                values[pos] = value
+        raw = values
+    if not isinstance(raw, (list, tuple)) or len(raw) != len(issues):
+        return None
+    snapped = tuple(_snap_value(issue, v) for issue, v in zip(issues, raw))
+    if any(v is None for v in snapped):
+        return None
+    try:
+        return snapped if outcome_space.is_valid(snapped) else None
+    except Exception:  # noqa: BLE001
+        return snapped
+
+
+def _snap_value(issue: Any, value: Any) -> Any:
+    """Coerce one value onto its issue's allowed values."""
+    try:
+        if issue.is_valid(value):
+            return value
+    except Exception:  # noqa: BLE001
+        pass
+    for cast in (int, float, str):
+        try:
+            candidate = cast(value)
+            if issue.is_valid(candidate):
+                return candidate
+        except Exception:  # noqa: BLE001
+            continue
+    try:
+        allowed = list(issue.all)
+    except Exception:  # noqa: BLE001
+        allowed = []
+    if allowed:
+        try:
+            target = float(str(value))
+            return min(allowed, key=lambda x: abs(float(str(x)) - target))
+        except (TypeError, ValueError):
+            text = str(value).strip().lower()
+            for candidate in allowed:
+                if str(candidate).strip().lower() == text:
+                    return candidate
+            return allowed[0]
+    try:
+        return min(max(float(value), float(issue.min_value)), float(issue.max_value))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def outcome_space_of(negotiator: Any):
+    """The outcome space, from the NMI if joined or the ufun otherwise.
+
+    The NMI is only available while attached to a mechanism, so a component
+    that consults it alone silently sees nothing outside a live negotiation.
+    """
+    os_ = None
+    if getattr(negotiator, "nmi", None) is not None:
+        os_ = getattr(negotiator.nmi, "outcome_space", None)
+    if os_ is None and getattr(negotiator, "ufun", None) is not None:
+        os_ = getattr(negotiator.ufun, "outcome_space", None)
+    return os_
+
+
+def _describe_domain(negotiator: Any) -> str:
+    """Issue names and allowed values, for a prompt."""
+    os_ = outcome_space_of(negotiator)
+    issues = list(getattr(os_, "issues", None) or [])
+    if not issues:
+        return ""
+    lines = []
+    for issue in issues:
+        try:
+            values = list(issue.all)[:12]
+        except Exception:  # noqa: BLE001
+            values = [f"{issue.min_value}..{issue.max_value}"]
+        lines.append(f"  - {issue.name}: {values}")
+    return "Issues, in order, with allowed values:\n" + "\n".join(lines)
+
+
+def _history_lines(negotiator: Any, ctx: TurnContext, k: int = 6) -> str:
+    """Recent offers with our utilities, for a prompt."""
+    ufun = getattr(negotiator, "ufun", None)
+    rows = []
+    for prev in ctx.history[-k:]:
+        if prev.entry == "propose" and prev.bid is not None:
+            who, outcome = "you", _outcome_of(prev.bid)
+        elif prev.their_offer is not None:
+            who, outcome = "them", prev.their_offer
+        else:
+            continue
+        try:
+            u = f" (worth {float(ufun(outcome)):.2f} to you)" if ufun else ""
+        except Exception:  # noqa: BLE001
+            u = ""
+        rows.append(f"  step {prev.step}: {who} offered {outcome}{u}")
+    return "Recent offers:\n" + "\n".join(rows) if rows else ""
+
+
+# =============================================================================
+# B — Bidding
+# =============================================================================
+
+
+DEFAULT_OFFERING_PROMPT = """You choose the next offer in a negotiation.
+
+Rules:
+    1. "outcome" MUST be a JSON list with exactly one value per issue, in the
+       issue order given, each value taken from that issue's allowed values.
+       An invalid outcome cannot be accepted by anyone and wastes the round.
+    2. Never offer something worth at or below your reserved value.
+    3. Open near your best outcome and concede gradually as time runs out.
+
+Respond with ONLY this JSON: {"outcome": [<one value per issue>], "why": "<brief>"}"""
+
+
+@define(slots=False)
+class LLMOffering(LLMComponent, OfferingPolicy):
+    """``B`` — the LLM chooses the offer.
+
+    Named for negmas' ``OfferingPolicy``, the slot it fills; the PABLO-ve letter
+    is ``B`` because that is BOA's own name for the bidding strategy.
+
+    Whatever the model returns is snapped onto the outcome space and checked
+    for individual rationality, so this component cannot emit an offer that is
+    invalid or worse than no deal. Both guards are counted in :attr:`stats`, so
+    reliance on them is measurable rather than hidden — the rate at which a
+    model needs rescuing is itself a result about that model.
+
+    Attributes:
+        system_prompt: Override the bidding instructions.
+        enforce_rationality: Refuse outcomes at or below the reserved value.
+        fallback: ``"aspiration"`` draws a time-appropriate outcome from the
+            utility inverter when nothing usable survives; ``"best"`` repeats
+            our best outcome; ``"none"`` returns ``None``.
+    """
+
+    system_prompt: str = DEFAULT_OFFERING_PROMPT
+    enforce_rationality: bool = True
+    fallback: str = "aspiration"
+    concession_exponent: float = 0.3
+    stats: dict[str, int] = field(factory=lambda: {"calls": 0, "invalid": 0, "fallback": 0})
+    _inverter: Any = field(default=None, init=False)
+
+    def _outcome_space(self):
+        return outcome_space_of(self.negotiator)
+
+    def _reserved(self) -> float:
+        try:
+            rv = self.negotiator.ufun.reserved_value
+        except Exception:  # noqa: BLE001
+            return 0.0
+        return float(rv) if rv is not None and rv == rv else 0.0
+
+    def _fallback_outcome(self, state):
+        """A valid, individually rational offer when the model gave none."""
+        self.stats["fallback"] += 1
+        ufun = getattr(self.negotiator, "ufun", None)
+        if ufun is None:
+            return None
+        if self.fallback == "none":
+            return None
+        if self.fallback == "best":
+            try:
+                return ufun.best()
+            except Exception:  # noqa: BLE001
+                return None
+        try:
+            if self._inverter is None:
+                self._inverter = ufun.invert()
+                self._inverter.init()
+            t = float(getattr(state, "relative_time", 0.0) or 0.0)
+            mn, mx = ufun.minmax()
+            floor = (self._reserved() - mn) / (mx - mn) if mx > mn else 0.0
+            target = floor + (1.0 - floor) * max(0.0, 1.0 - t) ** self.concession_exponent
+            found = self._inverter.worst_in((target, 1.0), normalized=True)
+            if found is not None:
+                return found
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            return ufun.best()
+        except Exception:  # noqa: BLE001
+            return None
+
+    def __call__(self, state, dest: str | None = None):
+        """Ask the model for an offer, then make sure it is one."""
+        ctx = getattr(self.negotiator, "turn", None)
+        self.stats["calls"] += 1
+        limit = word_limit_instruction(self.word_budget)
+        system = f"{self.system_prompt}\n{limit}" if limit else self.system_prompt
+        parts = [
+            _describe_domain(self.negotiator),
+            f"Round {getattr(state, 'step', 0)}, time "
+            f"{float(getattr(state, 'relative_time', 0.0) or 0.0):.0%}.",
+        ]
+        if ctx is not None:
+            parts.append(_history_lines(self.negotiator, ctx))
+            perception = ctx.perception_this_step()
+            if perception is not None and perception.acts:
+                parts.append(f"Their last move was: {', '.join(perception.acts)}.")
+        raw = self.call_llm(system, "\n".join(p for p in parts if p))
+        proposed = self.parse_json(raw).get("outcome")
+        outcome = snap_outcome(self._outcome_space(), proposed)
+        if proposed is not None and outcome is None:
+            self.stats["invalid"] += 1
+        if outcome is not None and self.enforce_rationality:
+            try:
+                if float(self.negotiator.ufun(outcome)) <= self._reserved():
+                    outcome = None
+            except Exception:  # noqa: BLE001
+                pass
+        return outcome if outcome is not None else self._fallback_outcome(state)
+
+
+# =============================================================================
+# A — Acceptance
+# =============================================================================
+
+
+DEFAULT_ACCEPTANCE_PROMPT = """You decide whether to accept an offer.
+
+Accept only when the offer is good enough given how much time is left and what
+you could still get by continuing. Never accept anything worth at or below your
+reserved value — no deal is better than a bad deal.
+
+Respond with ONLY this JSON: {"decision": "accept" | "reject", "why": "<brief>"}"""
+
+
+@define(slots=False)
+class LLMAcceptance(LLMComponent, AcceptancePolicy):
+    """``A`` — the LLM decides whether to accept.
+
+    A rationality guard overrides an ``accept`` of an offer at or below the
+    reserved value: that is not a judgement call, it is worse than walking away.
+
+    Attributes:
+        system_prompt: Override the acceptance instructions.
+        enforce_rationality: Veto irrational accepts (default ``True``).
+    """
+
+    system_prompt: str = DEFAULT_ACCEPTANCE_PROMPT
+    enforce_rationality: bool = True
+    stats: dict[str, int] = field(factory=lambda: {"calls": 0, "vetoed": 0})
+
+    def __call__(self, state, offer, source: str | None = None):
+        """Accept or reject the standing offer."""
+        from negmas.sao import ResponseType
+
+        if offer is None:
+            return ResponseType.REJECT_OFFER
+        ufun = getattr(self.negotiator, "ufun", None)
+        try:
+            utility = float(ufun(offer)) if ufun else None
+            reserved = float(ufun.reserved_value) if ufun else 0.0
+        except Exception:  # noqa: BLE001
+            utility, reserved = None, 0.0
+
+        self.stats["calls"] += 1
+        ctx = getattr(self.negotiator, "turn", None)
+        limit = word_limit_instruction(self.word_budget)
+        system = f"{self.system_prompt}\n{limit}" if limit else self.system_prompt
+        parts = [
+            f"Round {getattr(state, 'step', 0)}, time "
+            f"{float(getattr(state, 'relative_time', 0.0) or 0.0):.0%}.",
+            f"Their offer: {offer}"
+            + (f" (worth {utility:.2f} to you; your reserved value is {reserved:.2f})"
+               if utility is not None else ""),
+        ]
+        if ctx is not None:
+            parts.append(_history_lines(self.negotiator, ctx))
+        decision = str(
+            self.parse_json(self.call_llm(system, "\n".join(p for p in parts if p)))
+            .get("decision", "reject")
+        ).lower()
+
+        if decision.startswith("accept"):
+            if (
+                self.enforce_rationality
+                and utility is not None
+                and utility <= reserved
+            ):
+                self.stats["vetoed"] += 1
+                return ResponseType.REJECT_OFFER
+            return ResponseType.ACCEPT_OFFER
+        return ResponseType.REJECT_OFFER
+
+
+# =============================================================================
+# O — Opponent model
+# =============================================================================
+
+
+DEFAULT_UFUN_MODEL_PROMPT = """You infer what a negotiation partner values.
+
+From their offers (and anything they said), estimate how much each issue matters
+to them and which values they prefer. Weights must be non-negative and sum to 1.
+
+Respond with ONLY this JSON:
+{
+    "weights": {"<issue>": <0..1>, ...},
+    "values":  {"<issue>": {"<value>": <0..1>, ...}, ...}
+}"""
+
+
+@define(slots=False)
+class LLMUFunModel(LLMComponent, UFunModel):
+    """``O`` — an opponent utility model inferred by an LLM from their behaviour.
+
+    This is the "text-conditioned opponent model" that several HAN-2026 entries
+    arrived at independently: unlike a frequency model it can use *what the
+    partner said*, not only what they offered.
+
+    Re-estimates every ``refresh_every`` observed offers rather than every turn,
+    since beliefs move slowly and each estimate costs a call. Until the first
+    estimate arrives, :meth:`eval` returns 0 for every outcome, which is the
+    honest representation of "no belief yet".
+
+    Attributes:
+        system_prompt: Override the inference instructions.
+        refresh_every: Re-estimate after this many new partner offers.
+    """
+
+    system_prompt: str = DEFAULT_UFUN_MODEL_PROMPT
+    refresh_every: int = 3
+    weights: dict[str, float] = field(factory=dict)
+    values: dict[str, dict[str, float]] = field(factory=dict)
+    _seen: list[Any] = field(factory=list, init=False)
+    _last_estimate_at: int = field(default=-1, init=False)
+
+    def eval(self, offer):  # noqa: D102 - BaseUtilityFunction contract
+        if offer is None or not self.weights:
+            return 0.0
+        issues = list(
+            getattr(outcome_space_of(self.negotiator), "issues", None) or []
+        )
+        if not issues:
+            return 0.0
+        total = 0.0
+        for issue, value in zip(issues, offer):
+            name = str(issue.name)
+            weight = float(self.weights.get(name, 0.0))
+            per_value = self.values.get(name, {})
+            total += weight * float(per_value.get(str(value), 0.0))
+        return total
+
+    def before_responding(self, state, offer, source: str | None = None):
+        """Record the partner's offer and re-estimate when enough have arrived."""
+        if offer is None:
+            return
+        self._seen.append(offer)
+        if len(self._seen) - self._last_estimate_at < self.refresh_every:
+            return
+        self._last_estimate_at = len(self._seen)
+        self._estimate()
+
+    def _estimate(self) -> None:
+        """One LLM call to refresh the belief; failures leave it unchanged."""
+        ctx = getattr(self.negotiator, "turn", None)
+        parts = [_describe_domain(self.negotiator)]
+        parts.append(
+            "Their offers so far, most recent last:\n"
+            + "\n".join(f"  {o}" for o in self._seen[-8:])
+        )
+        if ctx is not None:
+            perception = ctx.perception_this_step()
+            if perception is not None and perception.text:
+                parts.append(f'They most recently said: "{perception.text}"')
+        data = self.parse_json(
+            self.call_llm(self.system_prompt, "\n".join(p for p in parts if p))
+        )
+        weights = data.get("weights")
+        values = data.get("values")
+        if isinstance(weights, dict) and weights:
+            try:
+                total = sum(abs(float(v)) for v in weights.values()) or 1.0
+                self.weights = {
+                    str(k): abs(float(v)) / total for k, v in weights.items()
+                }
+            except (TypeError, ValueError):
+                pass
+        if isinstance(values, dict):
+            cleaned: dict[str, dict[str, float]] = {}
+            for issue, mapping in values.items():
+                if isinstance(mapping, dict):
+                    try:
+                        cleaned[str(issue)] = {
+                            str(k): float(v) for k, v in mapping.items()
+                        }
+                    except (TypeError, ValueError):
+                        continue
+            if cleaned:
+                self.values = cleaned
+
+
+# =============================================================================
+# v — Validation
+# =============================================================================
+
+
+DEFAULT_VALIDATION_PROMPT = """You check that a negotiation message is TRUE of
+the decision behind it.
+
+A message is inconsistent if it announces terms that are not in the offer,
+claims a concession that did not happen, promises something the offer does not
+contain, or states an action other than the one being taken.
+
+Respond with ONLY this JSON:
+{
+    "consistent": true | false,
+    "issues": ["<short description>", ...],
+    "rewritten": "<a corrected message, or empty if already consistent>"
+}"""
+
+
+@define(slots=False)
+class LLMValidation(LLMComponent, Validation):
+    """``v`` — an LLM checks the utterance against the decision.
+
+    The generic honesty check: the words must be true of the offer and the
+    action. It may replace the utterance and may not touch the decision.
+
+    Attributes:
+        system_prompt: Override the checking instructions.
+    """
+
+    system_prompt: str = DEFAULT_VALIDATION_PROMPT
+    stats: dict[str, int] = field(factory=lambda: {"checked": 0, "inconsistent": 0})
+
+    def validate(self, ctx: TurnContext) -> ValidationResult:
+        """Check this turn's utterance for consistency with the decision."""
+        from negmas.sao import ResponseType
+
+        utterance = ctx.utterance
+        if utterance is None or not utterance.text.strip():
+            return ValidationResult(ok=True)
+        self.stats["checked"] += 1
+        if ctx.entry == "propose":
+            action = f"proposing {_outcome_of(ctx.bid)}"
+        elif ctx.acceptance == ResponseType.ACCEPT_OFFER:
+            action = f"accepting {ctx.their_offer}"
+        elif ctx.acceptance == ResponseType.END_NEGOTIATION:
+            action = "ending the negotiation"
+        else:
+            action = f"rejecting {ctx.their_offer}"
+        data = self.parse_json(
+            self.call_llm(
+                self.system_prompt,
+                f'The action being taken: {action}.\nThe message: "{utterance.text}"',
+            )
+        )
+        if data.get("consistent", True):
+            return ValidationResult(ok=True)
+        self.stats["inconsistent"] += 1
+        rewritten = str(data.get("rewritten") or "").strip()
+        return ValidationResult(
+            ok=False,
+            issues=tuple(str(i) for i in (data.get("issues") or ())) or ("inconsistent",),
+            revised=Utterance(text=rewritten, data=utterance.data) if rewritten else None,
+        )
+
+
+# =============================================================================
+# e — Ending
+# =============================================================================
+
+
+DEFAULT_ENDING_PROMPT = """You decide whether to walk away from a negotiation.
+
+Walk away only when continuing is worse than no deal at all — the partner will
+clearly not offer anything above your reserved value before time runs out.
+Ending early forfeits every remaining chance, so the bar is high.
+
+Respond with ONLY this JSON: {"end": true | false, "why": "<brief>"}"""
+
+
+@define(slots=False)
+class LLMEnding(LLMComponent, Ending):
+    """``e`` — an LLM decides whether to terminate.
+
+    Guarded on both sides: it is never consulted before ``min_time`` (walking
+    away in the opening rounds is almost never right), and an ``end`` decision
+    is overridden when the standing offer is already better than no deal.
+
+    Attributes:
+        system_prompt: Override the instructions.
+        min_time: Relative time before which ending is not even considered.
+    """
+
+    system_prompt: str = DEFAULT_ENDING_PROMPT
+    min_time: float = 0.5
+    stats: dict[str, int] = field(factory=lambda: {"asked": 0, "ended": 0, "vetoed": 0})
+
+    def should_end(self, ctx: TurnContext) -> EndingDecision:
+        """Whether to walk away now."""
+        if ctx.relative_time < self.min_time:
+            return EndingDecision(end=False, reason="too early to consider ending")
+        ufun = getattr(self.negotiator, "ufun", None)
+        utility = reserved = None
+        if ufun is not None and ctx.their_offer is not None:
+            try:
+                utility = float(ufun(ctx.their_offer))
+                reserved = float(ufun.reserved_value)
+            except Exception:  # noqa: BLE001
+                utility = reserved = None
+        self.stats["asked"] += 1
+        data = self.parse_json(
+            self.call_llm(
+                self.system_prompt,
+                f"Time is {ctx.relative_time:.0%}.\n"
+                f"Their offer: {ctx.their_offer}"
+                + (
+                    f" (worth {utility:.2f}; your reserved value is {reserved:.2f})"
+                    if utility is not None and reserved is not None
+                    else ""
+                )
+                + f"\n{_history_lines(self.negotiator, ctx)}",
+            )
+        )
+        if not data.get("end"):
+            return EndingDecision(end=False, reason=str(data.get("why", "")))
+        if utility is not None and reserved is not None and utility > reserved:
+            self.stats["vetoed"] += 1
+            return EndingDecision(
+                end=False, reason="vetoed: the standing offer beats no deal"
+            )
+        self.stats["ended"] += 1
+        return EndingDecision(end=True, reason=str(data.get("why", "")))

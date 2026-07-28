@@ -29,10 +29,17 @@ from negmas_llm.config import (
     resolve_llm_config,
 )
 from negmas_llm.pablove_components import (
+    LLMAcceptance,
     LLMComponent,
+    LLMEnding,
     LLMLanguage,
+    LLMOffering,
     LLMPerception,
+    LLMUFunModel,
+    LLMValidation,
     TemplateLanguage,
+    outcome_space_of,
+    snap_outcome,
 )
 from negmas_llm.pablove import (
     Ending,
@@ -544,7 +551,14 @@ __all__ = [
     "LLMComponent",
     "LLMLanguage",
     "LLMPerception",
+    "LLMOffering",
+    "LLMAcceptance",
+    "LLMUFunModel",
+    "LLMValidation",
+    "LLMEnding",
     "TemplateLanguage",
+    "snap_outcome",
+    "outcome_space_of",
     # LLM provider/model configuration (single source of truth)
     "resolve_llm_config",
     "effective_llm_config",
