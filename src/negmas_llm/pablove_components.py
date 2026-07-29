@@ -438,7 +438,9 @@ def snap_outcome(outcome_space: Any, raw: Any, issue_index: dict[str, int] | Non
         raw = values
     if not isinstance(raw, (list, tuple)) or len(raw) != len(issues):
         return None
-    snapped = tuple(_snap_value(issue, v) for issue, v in zip(issues, raw))
+    snapped = tuple(
+        _snap_value(issue, v) for issue, v in zip(issues, raw, strict=True)
+    )
     if any(v is None for v in snapped):
         return None
     try:
@@ -770,7 +772,7 @@ class LLMUFunModel(LLMComponent, UFunModel):
         if not issues:
             return 0.0
         total = 0.0
-        for issue, value in zip(issues, offer):
+        for issue, value in zip(issues, offer, strict=False):
             name = str(issue.name)
             weight = float(self.weights.get(name, 0.0))
             per_value = self.values.get(name, {})
