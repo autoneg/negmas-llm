@@ -223,8 +223,8 @@ export NEGMAS_LLM_LLMBoulwareTBNegotiator_MODEL=claude-3-opus
 ```python
 from negmas_llm import LLMBoulwareTBNegotiator, LLMConcederTBNegotiator
 
-LLMBoulwareTBNegotiator(name="a")   # anthropic / claude-3-opus
-LLMConcederTBNegotiator(name="b")   # openai / gpt-4o
+LLMBoulwareTBNegotiator(name="a")  # anthropic / claude-3-opus
+LLMConcederTBNegotiator(name="b")  # openai / gpt-4o
 ```
 
 Two coherence rules keep a model from reaching the wrong provider: the
@@ -249,8 +249,12 @@ export NEGMAS_LLM_EFFORT_ACCURATE=high
 ```python
 from negmas_llm import resolve_llm_config
 
-resolve_llm_config("LLMBoulwareTBNegotiator", model_type="fast")      # groq / llama-3.1-8b-instant / low
-resolve_llm_config("LLMBoulwareTBNegotiator", model_type="accurate")  # openai / o3 / high
+resolve_llm_config(
+    "LLMBoulwareTBNegotiator", model_type="fast"
+)  # groq / llama-3.1-8b-instant / low
+resolve_llm_config(
+    "LLMBoulwareTBNegotiator", model_type="accurate"
+)  # openai / o3 / high
 ```
 
 See the full reference in

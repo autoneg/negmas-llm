@@ -34,7 +34,6 @@ from negmas_llm.pablove import (
     Ending,
     EndingDecision,
     Language,
-    PABLOveNegotiator,
     Perception,
     PerceptionResult,
     TurnContext,
@@ -58,15 +57,19 @@ def domain():
     os_ = make_os([price, quantity])
     # buyer prefers low price / high quantity; seller the reverse
     buyer = LUFun(
-        values={"price": {100: 1.0, 150: 0.5, 200: 0.0},
-                "quantity": {1: 0.0, 2: 0.5, 3: 1.0}},
+        values={
+            "price": {100: 1.0, 150: 0.5, 200: 0.0},
+            "quantity": {1: 0.0, 2: 0.5, 3: 1.0},
+        },
         weights={"price": 0.6, "quantity": 0.4},
         outcome_space=os_,
         reserved_value=0.0,
     )
     seller = LUFun(
-        values={"price": {100: 0.0, 150: 0.5, 200: 1.0},
-                "quantity": {1: 1.0, 2: 0.5, 3: 0.0}},
+        values={
+            "price": {100: 0.0, 150: 0.5, 200: 1.0},
+            "quantity": {1: 1.0, 2: 0.5, 3: 0.0},
+        },
         weights={"price": 0.6, "quantity": 0.4},
         outcome_space=os_,
         reserved_value=0.0,
@@ -130,7 +133,9 @@ def test_plain_pablove_returns_bare_outcomes(domain):
     )
     m = _run(neg, os_, u2)
     for entry in m.full_trace:
-        assert entry.data in (None, {}), "a plain BOA configuration must not attach data"
+        assert entry.data in (None, {}), (
+            "a plain BOA configuration must not attach data"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +170,9 @@ class TemplateLanguage(Language):
     def realize(self, ctx: TurnContext) -> Utterance:
         if ctx.entry == "propose":
             return Utterance(text=f"I propose {ctx.bid}.", data={"entry": "propose"})
-        return Utterance(text=f"Responding {ctx.acceptance}.", data={"entry": "respond"})
+        return Utterance(
+            text=f"Responding {ctx.acceptance}.", data={"entry": "respond"}
+        )
 
 
 @define
@@ -471,9 +478,14 @@ def test_joint_policy_idiom_computes_the_bid_once(domain):
             # negmas caches propose() per (step, thread), so this reuses the
             # same forward pass rather than triggering a second one.
             mine = joint.propose(state)
-            if offer is not None and mine is not None and self.negotiator.ufun is not None:
-                if float(self.negotiator.ufun(offer)) >= float(self.negotiator.ufun(mine)):
-                    return ResponseType.ACCEPT_OFFER
+            if (
+                offer is not None
+                and mine is not None
+                and self.negotiator.ufun is not None
+                and float(self.negotiator.ufun(offer))
+                >= float(self.negotiator.ufun(mine))
+            ):
+                return ResponseType.ACCEPT_OFFER
             return ResponseType.REJECT_OFFER
 
     neg = make_pablove(acceptance=ReadsTheJointBid(0), offering=joint, ufun=u1)

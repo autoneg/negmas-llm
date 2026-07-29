@@ -38,6 +38,7 @@ bounds total spend — see the note below on which one you want.)
 !!! tip "Discover the exact variable name"
     ```python
     from negmas_llm import per_type_env_var
+
     per_type_env_var("LLMBoulwareTBNegotiator", "model")
     # -> 'NEGMAS_LLM_LLMBoulwareTBNegotiator_MODEL'
     ```
@@ -103,8 +104,8 @@ export NEGMAS_LLM_LLMBoulwareTBNegotiator_MODEL=claude-3-opus
 ```python
 from negmas_llm import LLMBoulwareTBNegotiator, LLMConcederTBNegotiator
 
-LLMBoulwareTBNegotiator(name="a")   # -> anthropic / claude-3-opus
-LLMConcederTBNegotiator(name="b")   # -> openai / gpt-4o
+LLMBoulwareTBNegotiator(name="a")  # -> anthropic / claude-3-opus
+LLMConcederTBNegotiator(name="b")  # -> openai / gpt-4o
 ```
 
 Because `LLMBoulwareTBNegotiator` was moved to `anthropic`, it does **not** pick

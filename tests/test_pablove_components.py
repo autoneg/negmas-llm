@@ -9,13 +9,12 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+from attrs import define
 from negmas import make_issue, make_os
 from negmas.gb.components.acceptance import AcceptTop
 from negmas.gb.components.offering import TimeBasedOfferingPolicy
 from negmas.preferences import LinearAdditiveUtilityFunction as LUFun
 from negmas.sao import AspirationNegotiator, ResponseType, SAOMechanism
-
-from attrs import define
 
 from negmas_llm.pablove import (
     Language,
@@ -43,16 +42,22 @@ def domain():
         [make_issue([100, 150, 200], "price"), make_issue([1, 2, 3], "quantity")]
     )
     u = LUFun(
-        values={"price": {100: 1.0, 150: 0.5, 200: 0.0},
-                "quantity": {1: 0.0, 2: 0.5, 3: 1.0}},
+        values={
+            "price": {100: 1.0, 150: 0.5, 200: 0.0},
+            "quantity": {1: 0.0, 2: 0.5, 3: 1.0},
+        },
         weights={"price": 0.6, "quantity": 0.4},
-        outcome_space=os_, reserved_value=0.0,
+        outcome_space=os_,
+        reserved_value=0.0,
     )
     v = LUFun(
-        values={"price": {100: 0.0, 150: 0.5, 200: 1.0},
-                "quantity": {1: 1.0, 2: 0.5, 3: 0.0}},
+        values={
+            "price": {100: 0.0, 150: 0.5, 200: 1.0},
+            "quantity": {1: 1.0, 2: 0.5, 3: 0.0},
+        },
         weights={"price": 0.6, "quantity": 0.4},
-        outcome_space=os_, reserved_value=0.0,
+        outcome_space=os_,
+        reserved_value=0.0,
     )
     return os_, u, v
 
@@ -79,7 +84,9 @@ def test_template_language_needs_no_llm(domain):
         language=TemplateLanguage(),
         ufun=u1,
     )
-    with patch("litellm.completion", side_effect=AssertionError("must not call an LLM")):
+    with patch(
+        "litellm.completion", side_effect=AssertionError("must not call an LLM")
+    ):
         m = _run(neg, os_, u2)
     mine = [t for t in m.full_trace if t.negotiator == neg.id]
     assert any(t.text and t.text.startswith("I propose") for t in mine)
@@ -116,7 +123,9 @@ def test_llm_language_uses_one_call_per_turn_and_cannot_change_the_offer(domain)
         language=LLMLanguage(),
         ufun=u1,
     )
-    with patch("litellm.completion", side_effect=lambda *a, **k: _mock(payload)) as mock:
+    with patch(
+        "litellm.completion", side_effect=lambda *a, **k: _mock(payload)
+    ) as mock:
         m = _run(neg, os_, u2)
     spoken = [t for t in neg.turns if t.utterance is not None]
     assert spoken and mock.call_count == len(spoken), "expected exactly one call/turn"
@@ -179,9 +188,15 @@ def test_perception_classifies_when_there_is_no_typed_data(domain):
     state.current_data = {"text": "That is too expensive for us."}
     ctx = TurnContext(entry="respond", state=state, their_offer=(200, 1))
     payload = json.dumps(
-        {"acts": ["refuse"], "sentiment": "negative", "commitments": ["no more than 150"]}
+        {
+            "acts": ["refuse"],
+            "sentiment": "negative",
+            "commitments": ["no more than 150"],
+        }
     )
-    with patch("litellm.completion", side_effect=lambda *a, **k: _mock(payload)) as mock:
+    with patch(
+        "litellm.completion", side_effect=lambda *a, **k: _mock(payload)
+    ) as mock:
         result = perc.perceive(ctx)
     assert mock.call_count == 1
     assert result.source == "classified"
@@ -225,8 +240,8 @@ def test_og_narrator_is_a_pablove_configuration(domain):
     os_, u1, u2 = domain
     og_narrator = make_pablove(
         acceptance=AcceptTop(0),
-        offering=TimeBasedOfferingPolicy(),   # the deterministic "offer generator"
-        language=LLMLanguage(),               # the "narrator"
+        offering=TimeBasedOfferingPolicy(),  # the deterministic "offer generator"
+        language=LLMLanguage(),  # the "narrator"
         ufun=u1,
     )
     payload = json.dumps({"text": "This configuration suits us both."})
@@ -256,12 +271,12 @@ from negmas_llm.pablove_components import (  # noqa: E402
 @pytest.mark.parametrize(
     "raw,expected_valid",
     [
-        ([150, 2], True),          # already valid
-        (["150", "2"], True),      # strings cast
-        ([175, 2], True),          # off-grid numeric snaps to nearest
-        ({"quantity": 2, "price": 100}, True),   # dict, wrong order
-        ({"PRICE": 100, "QUANTITY": 2}, True),   # case-insensitive keys
-        ([150], False),            # wrong arity
+        ([150, 2], True),  # already valid
+        (["150", "2"], True),  # strings cast
+        ([175, 2], True),  # off-grid numeric snaps to nearest
+        ({"quantity": 2, "price": 100}, True),  # dict, wrong order
+        ({"PRICE": 100, "QUANTITY": 2}, True),  # case-insensitive keys
+        ([150], False),  # wrong arity
         ("nonsense", False),
         (None, False),
     ],
@@ -276,13 +291,16 @@ def test_llm_offering_always_emits_a_valid_rational_outcome(domain):
     """Whatever the model says, the offer is valid and beats no deal."""
     os_, u1, u2 = domain
     for payload in (
-        json.dumps({"outcome": [175, 2]}),      # off-grid
-        json.dumps({"outcome": ["nope"]}),      # wrong arity
-        "not json at all",                      # unparseable
+        json.dumps({"outcome": [175, 2]}),  # off-grid
+        json.dumps({"outcome": ["nope"]}),  # wrong arity
+        "not json at all",  # unparseable
     ):
         offering = LLMOffering()
         neg = make_pablove(acceptance=AcceptTop(0), offering=offering, ufun=u1)
-        with patch("litellm.completion", side_effect=lambda *a, **k: _mock(payload)):
+        with patch(
+            "litellm.completion",
+            side_effect=lambda *a, payload=payload, **k: _mock(payload),
+        ):
             m = _run(neg, os_, u2, n_steps=4)
         mine = [t for t in m.full_trace if t.negotiator == neg.id and t.offer]
         assert mine, "never offered"
@@ -308,12 +326,16 @@ def test_llm_acceptance_vetoes_an_irrational_accept(domain):
     worst = min(os_.enumerate(), key=u1)
     u1.reserved_value = float(u1(worst)) + 1e-9
     acceptance = LLMAcceptance()
-    neg = make_pablove(acceptance=acceptance, offering=TimeBasedOfferingPolicy(), ufun=u1)
+    neg = make_pablove(
+        acceptance=acceptance, offering=TimeBasedOfferingPolicy(), ufun=u1
+    )
     m = SAOMechanism(outcome_space=os_, n_steps=4)
     m.add(neg)
     m.add(AspirationNegotiator(name="opp", ufun=u1))
-    with patch("litellm.completion",
-               side_effect=lambda *a, **k: _mock(json.dumps({"decision": "accept"}))):
+    with patch(
+        "litellm.completion",
+        side_effect=lambda *a, **k: _mock(json.dumps({"decision": "accept"})),
+    ):
         response = acceptance(m.state, worst, None)
     assert response == ResponseType.REJECT_OFFER
     assert acceptance.stats["vetoed"] == 1
@@ -324,12 +346,16 @@ def test_llm_acceptance_accepts_when_rational(domain):
     best = max(os_.enumerate(), key=u1)
     u1.reserved_value = 0.0
     acceptance = LLMAcceptance()
-    neg = make_pablove(acceptance=acceptance, offering=TimeBasedOfferingPolicy(), ufun=u1)
+    neg = make_pablove(
+        acceptance=acceptance, offering=TimeBasedOfferingPolicy(), ufun=u1
+    )
     m = SAOMechanism(outcome_space=os_, n_steps=4)
     m.add(neg)
     m.add(AspirationNegotiator(name="opp", ufun=u1))
-    with patch("litellm.completion",
-               side_effect=lambda *a, **k: _mock(json.dumps({"decision": "accept"}))):
+    with patch(
+        "litellm.completion",
+        side_effect=lambda *a, **k: _mock(json.dumps({"decision": "accept"})),
+    ):
         assert acceptance(m.state, best, None) == ResponseType.ACCEPT_OFFER
 
 
@@ -338,13 +364,18 @@ def test_llm_ufun_model_learns_weights_and_scores_outcomes(domain):
     os_, u1, u2 = domain
     model = LLMUFunModel(refresh_every=1)
     neg = make_pablove(
-        acceptance=AcceptTop(0), offering=TimeBasedOfferingPolicy(), model=model, ufun=u1
+        acceptance=AcceptTop(0),
+        offering=TimeBasedOfferingPolicy(),
+        model=model,
+        ufun=u1,
     )
     payload = json.dumps(
         {
-            "weights": {"price": 3.0, "quantity": 1.0},   # unnormalized on purpose
-            "values": {"price": {"200": 1.0, "150": 0.5, "100": 0.0},
-                       "quantity": {"1": 1.0, "2": 0.5, "3": 0.0}},
+            "weights": {"price": 3.0, "quantity": 1.0},  # unnormalized on purpose
+            "values": {
+                "price": {"200": 1.0, "150": 0.5, "100": 0.0},
+                "quantity": {"1": 1.0, "2": 0.5, "3": 0.0},
+            },
         }
     )
     with patch("litellm.completion", side_effect=lambda *a, **k: _mock(payload)):
@@ -379,14 +410,19 @@ def test_llm_validation_flags_and_repairs_inconsistent_text(domain):
         ufun=u1,
     )
     verdict = json.dumps(
-        {"consistent": False, "issues": ["claims terms not in the offer"],
-         "rewritten": "Here is my proposal."}
+        {
+            "consistent": False,
+            "issues": ["claims terms not in the offer"],
+            "rewritten": "Here is my proposal.",
+        }
     )
     with patch("litellm.completion", side_effect=lambda *a, **k: _mock(verdict)):
         _run(neg, os_, u2, n_steps=4)
     assert validation.stats["inconsistent"] > 0
     repaired = [t for t in neg.turns if t.revalidations]
-    assert repaired and all(t.utterance.text == "Here is my proposal." for t in repaired)
+    assert repaired and all(
+        t.utterance.text == "Here is my proposal." for t in repaired
+    )
 
 
 def test_llm_ending_will_not_walk_away_from_a_good_offer(domain):
@@ -396,14 +432,18 @@ def test_llm_ending_will_not_walk_away_from_a_good_offer(domain):
     u1.reserved_value = 0.0
     ending = LLMEnding(min_time=0.0)
     neg = make_pablove(
-        acceptance=AcceptTop(0), offering=TimeBasedOfferingPolicy(),
-        ending=ending, ufun=u1,
+        acceptance=AcceptTop(0),
+        offering=TimeBasedOfferingPolicy(),
+        ending=ending,
+        ufun=u1,
     )
     state = SAOMechanism(outcome_space=os_, n_steps=4).state
     ctx = TurnContext(entry="respond", state=state, their_offer=best)
     neg._turn = ctx
-    with patch("litellm.completion",
-               side_effect=lambda *a, **k: _mock(json.dumps({"end": True, "why": "bored"}))):
+    with patch(
+        "litellm.completion",
+        side_effect=lambda *a, **k: _mock(json.dumps({"end": True, "why": "bored"})),
+    ):
         decision = ending.should_end(ctx)
     assert not decision.end and "vetoed" in decision.reason
     assert ending.stats["vetoed"] == 1

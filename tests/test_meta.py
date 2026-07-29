@@ -125,7 +125,8 @@ class TestLLMMetaNegotiatorUnit:
         meta = LLMMetaNegotiator(
             base_negotiator=base,
             provider=TEST_PROVIDER,
-            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
             name="test_meta",
         )
         assert meta.model == TEST_MODEL
@@ -149,7 +150,8 @@ class TestLLMMetaNegotiatorUnit:
         meta = LLMMetaNegotiator(
             base_negotiator=base,
             provider=TEST_PROVIDER,
-            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
         )
         # Check that the base is in the negotiators list
         assert len(meta.negotiators) == 1
@@ -163,7 +165,8 @@ class TestLLMMetaNegotiatorUnit:
         meta = LLMMetaNegotiator(
             base_negotiator=base,
             provider=TEST_PROVIDER,
-            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
             system_prompt=custom_prompt,
         )
         assert meta._build_system_prompt() == custom_prompt
@@ -181,7 +184,8 @@ class TestLLMMetaNegotiatorWithMock:
         meta = LLMMetaNegotiator(
             base_negotiator=base,
             provider=TEST_PROVIDER,
-            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
             ufun=ufun1,
         )
 
@@ -220,14 +224,16 @@ class TestLLMMetaNegotiatorWithMock:
         meta1 = LLMMetaNegotiator(
             base_negotiator=base1,
             provider=TEST_PROVIDER,
-            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
             ufun=ufun1,
             name="meta1",
         )
         meta2 = LLMMetaNegotiator(
             base_negotiator=base2,
             provider=TEST_PROVIDER,
-            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
             ufun=ufun1,  # Same ufun
             name="meta2",
         )
@@ -286,14 +292,16 @@ class TestLLMMetaNegotiatorIntegration:
         meta_boulware = LLMMetaNegotiator(
             base_negotiator=boulware_base,
             provider=TEST_PROVIDER,
-            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
             ufun=ufun1,
             name="boulware_meta",
         )
         meta_linear = LLMMetaNegotiator(
             base_negotiator=linear_base,
             provider=TEST_PROVIDER,
-            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
             ufun=ufun2,
             name="linear_meta",
         )
@@ -351,13 +359,15 @@ class TestLLMMetaNegotiatorIntegration:
         meta1 = LLMMetaNegotiator(
             base_negotiator=base1,
             provider=TEST_PROVIDER,
-            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
             ufun=ufun1,
         )
         meta2 = LLMMetaNegotiator(
             base_negotiator=base2,
             provider=TEST_PROVIDER,
-            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
             ufun=ufun2,
         )
 
@@ -399,13 +409,15 @@ class TestLLMMetaNegotiatorIntegration:
         meta_boulware = LLMMetaNegotiator(
             base_negotiator=BoulwareTBNegotiator(),
             provider=TEST_PROVIDER,
-            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
             ufun=ufun1,
         )
         meta_linear = LLMMetaNegotiator(
             base_negotiator=LinearTBNegotiator(),
             provider=TEST_PROVIDER,
-            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
             ufun=ufun2,
         )
 
@@ -454,7 +466,10 @@ class TestRecommenderMetaNegotiators:
         """LLMMetaNegotiator defaults to enforcing the base outcome/response."""
         base = BoulwareTBNegotiator()
         meta = LLMMetaNegotiator(
-            base_negotiator=base, provider=TEST_PROVIDER, model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS
+            base_negotiator=base,
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
         )
         assert meta.enforce_base_offer is True
         assert meta.enforce_base_response is True
@@ -463,7 +478,10 @@ class TestRecommenderMetaNegotiators:
         """LLMNegotiatorWithRecommender hardcodes the flags to False."""
         base = BoulwareTBNegotiator()
         meta = LLMNegotiatorWithRecommender(
-            base_negotiator=base, provider=TEST_PROVIDER, model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS
+            base_negotiator=base,
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
         )
         assert meta.enforce_base_offer is False
         assert meta.enforce_base_response is False
@@ -472,7 +490,8 @@ class TestRecommenderMetaNegotiators:
             LLMNegotiatorWithRecommender(
                 base_negotiator=base,
                 provider=TEST_PROVIDER,
-                model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+                model=TEST_MODEL,
+                **TEST_LLM_EXTRA_KWARGS,
                 enforce_base_offer=True,
             )
 
@@ -480,7 +499,10 @@ class TestRecommenderMetaNegotiators:
         """LLMEnhancedNegotiator hardcodes the flags to True."""
         base = BoulwareTBNegotiator()
         meta = LLMEnhancedNegotiator(
-            base_negotiator=base, provider=TEST_PROVIDER, model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS
+            base_negotiator=base,
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
         )
         assert meta.enforce_base_offer is True
         assert meta.enforce_base_response is True
@@ -489,7 +511,8 @@ class TestRecommenderMetaNegotiators:
             LLMEnhancedNegotiator(
                 base_negotiator=base,
                 provider=TEST_PROVIDER,
-                model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+                model=TEST_MODEL,
+                **TEST_LLM_EXTRA_KWARGS,
                 enforce_base_offer=False,
             )
 
@@ -505,7 +528,8 @@ class TestRecommenderMetaNegotiators:
             recommenders=recommenders,
             recommender_names=names,
             provider=TEST_PROVIDER,
-            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
         )
         assert len(meta.recommenders) == 3
         assert tuple(meta.negotiator_names) == tuple(names)
@@ -517,7 +541,8 @@ class TestRecommenderMetaNegotiators:
                 recommenders=recommenders,
                 recommender_names=names,
                 provider=TEST_PROVIDER,
-                model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+                model=TEST_MODEL,
+                **TEST_LLM_EXTRA_KWARGS,
                 base_negotiator=recommenders[0],
             )
 
@@ -525,7 +550,10 @@ class TestRecommenderMetaNegotiators:
         """An empty recommender list is rejected."""
         with pytest.raises(ValueError):
             LLMNegotiatorWithMultipleRecommenders(
-                recommenders=[], provider=TEST_PROVIDER, model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS
+                recommenders=[],
+                provider=TEST_PROVIDER,
+                model=TEST_MODEL,
+                **TEST_LLM_EXTRA_KWARGS,
             )
 
     def test_multi_recommender_name_length_mismatch(self):
@@ -535,7 +563,8 @@ class TestRecommenderMetaNegotiators:
                 recommenders=[BoulwareTBNegotiator(), LinearTBNegotiator()],
                 recommender_names=["only_one"],
                 provider=TEST_PROVIDER,
-                model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+                model=TEST_MODEL,
+                **TEST_LLM_EXTRA_KWARGS,
             )
 
     def test_propose_override_uses_llm_outcome(self, simple_negotiation_setup):
@@ -546,7 +575,8 @@ class TestRecommenderMetaNegotiators:
         meta = LLMMetaNegotiator(
             base_negotiator=base,
             provider=TEST_PROVIDER,
-            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
             ufun=ufun1,
             enforce_base_offer=False,
         )
@@ -577,7 +607,8 @@ class TestRecommenderMetaNegotiators:
         meta = LLMMetaNegotiator(
             base_negotiator=base,
             provider=TEST_PROVIDER,
-            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
             ufun=ufun1,
             enforce_base_offer=False,
         )
@@ -607,7 +638,8 @@ class TestRecommenderMetaNegotiators:
         meta = LLMMetaNegotiator(
             base_negotiator=base,
             provider=TEST_PROVIDER,
-            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
             ufun=ufun1,
             enforce_base_response=False,
         )
@@ -638,7 +670,8 @@ class TestRecommenderMetaNegotiators:
         meta = LLMMetaNegotiator(
             base_negotiator=base,
             provider=TEST_PROVIDER,
-            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
             ufun=ufun1,
             enforce_base_response=False,
         )
@@ -671,7 +704,8 @@ class TestRecommenderMetaNegotiators:
             recommenders=[r1, r2],
             recommender_names=["boulware", "linear"],
             provider=TEST_PROVIDER,
-            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
             ufun=ufun1,
         )
         mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=10)
@@ -704,7 +738,8 @@ class TestRecommenderMetaNegotiators:
             recommenders=[r1, r2],
             recommender_names=["boulware", "linear"],
             provider=TEST_PROVIDER,
-            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
             ufun=ufun1,
         )
         mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=10)
@@ -739,7 +774,8 @@ class TestRecommenderMetaNegotiators:
             recommenders=[r1, r2, r3],
             recommender_names=["a", "b", "c"],
             provider=TEST_PROVIDER,
-            model=TEST_MODEL, **TEST_LLM_EXTRA_KWARGS,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
             ufun=ufun1,
         )
         mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=10)

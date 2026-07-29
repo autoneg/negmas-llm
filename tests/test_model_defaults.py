@@ -7,8 +7,6 @@ default (no cap sent) and answer length is bounded by a word budget stated in
 the prompt.
 """
 
-import os
-
 import pytest
 
 from negmas_llm.common import (
