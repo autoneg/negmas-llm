@@ -345,9 +345,11 @@ class PABLOveNegotiator(MAPNegotiator):
         **kwargs,
     ):
         extra = list(extra_components) if extra_components else []
-        names = list(extra_component_names) if extra_component_names else [
-            f"extra{i}" for i in range(len(extra))
-        ]
+        names = (
+            list(extra_component_names)
+            if extra_component_names
+            else [f"extra{i}" for i in range(len(extra))]
+        )
         # Registered as ordinary components so they receive every lifecycle
         # callback; the pipeline calls them explicitly at the right moment.
         for comp, name in (
@@ -467,9 +469,7 @@ class PABLOveNegotiator(MAPNegotiator):
                 ctx.revalidations += 1
                 continue
             break
-        if self._resolution == "strict" and not (
-            ctx.validation and ctx.validation.ok
-        ):
+        if self._resolution == "strict" and not (ctx.validation and ctx.validation.ok):
             # Irreparable: say nothing rather than say something untrue.
             ctx.utterance = Utterance()
 

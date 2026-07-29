@@ -389,9 +389,7 @@ class LLMPerception(LLMComponent, Perception):
         commitments = data.get("commitments") or []
         return PerceptionResult(
             acts=tuple(str(a) for a in acts if a),
-            commitments=tuple(
-                {"text": str(c)} for c in commitments if c
-            ),
+            commitments=tuple({"text": str(c)} for c in commitments if c),
             sentiment=str(data["sentiment"]) if data.get("sentiment") else None,
             source="classified",
             text=text,
@@ -403,7 +401,9 @@ class LLMPerception(LLMComponent, Perception):
 # =============================================================================
 
 
-def snap_outcome(outcome_space: Any, raw: Any, issue_index: dict[str, int] | None = None):
+def snap_outcome(
+    outcome_space: Any, raw: Any, issue_index: dict[str, int] | None = None
+):
     """Coerce whatever a model returned into a valid outcome, or ``None``.
 
     Only structurally valid outcomes can ever be agreed on, so a near-miss
@@ -438,9 +438,7 @@ def snap_outcome(outcome_space: Any, raw: Any, issue_index: dict[str, int] | Non
         raw = values
     if not isinstance(raw, (list, tuple)) or len(raw) != len(issues):
         return None
-    snapped = tuple(
-        _snap_value(issue, v) for issue, v in zip(issues, raw, strict=True)
-    )
+    snapped = tuple(_snap_value(issue, v) for issue, v in zip(issues, raw, strict=True))
     if any(v is None for v in snapped):
         return None
     try:
@@ -574,7 +572,9 @@ class LLMOffering(LLMComponent, OfferingPolicy):
     enforce_rationality: bool = True
     fallback: str = "aspiration"
     concession_exponent: float = 0.3
-    stats: dict[str, int] = field(factory=lambda: {"calls": 0, "invalid": 0, "fallback": 0})
+    stats: dict[str, int] = field(
+        factory=lambda: {"calls": 0, "invalid": 0, "fallback": 0}
+    )
     _inverter: Any = field(default=None, init=False)
 
     def _outcome_space(self):
@@ -607,7 +607,9 @@ class LLMOffering(LLMComponent, OfferingPolicy):
             t = float(getattr(state, "relative_time", 0.0) or 0.0)
             mn, mx = ufun.minmax()
             floor = (self._reserved() - mn) / (mx - mn) if mx > mn else 0.0
-            target = floor + (1.0 - floor) * max(0.0, 1.0 - t) ** self.concession_exponent
+            target = (
+                floor + (1.0 - floor) * max(0.0, 1.0 - t) ** self.concession_exponent
+            )
             found = self._inverter.worst_in((target, 1.0), normalized=True)
             if found is not None:
                 return found
@@ -699,22 +701,22 @@ class LLMAcceptance(LLMComponent, AcceptancePolicy):
             f"Round {getattr(state, 'step', 0)}, time "
             f"{float(getattr(state, 'relative_time', 0.0) or 0.0):.0%}.",
             f"Their offer: {offer}"
-            + (f" (worth {utility:.2f} to you; your reserved value is {reserved:.2f})"
-               if utility is not None else ""),
+            + (
+                f" (worth {utility:.2f} to you; your reserved value is {reserved:.2f})"
+                if utility is not None
+                else ""
+            ),
         ]
         if ctx is not None:
             parts.append(_history_lines(self.negotiator, ctx))
         decision = str(
-            self.parse_json(self.call_llm(system, "\n".join(p for p in parts if p)))
-            .get("decision", "reject")
+            self.parse_json(
+                self.call_llm(system, "\n".join(p for p in parts if p))
+            ).get("decision", "reject")
         ).lower()
 
         if decision.startswith("accept"):
-            if (
-                self.enforce_rationality
-                and utility is not None
-                and utility <= reserved
-            ):
+            if self.enforce_rationality and utility is not None and utility <= reserved:
                 self.stats["vetoed"] += 1
                 return ResponseType.REJECT_OFFER
             return ResponseType.ACCEPT_OFFER
@@ -766,9 +768,7 @@ class LLMUFunModel(LLMComponent, UFunModel):
     def eval(self, offer):  # noqa: D102 - BaseUtilityFunction contract
         if offer is None or not self.weights:
             return 0.0
-        issues = list(
-            getattr(outcome_space_of(self.negotiator), "issues", None) or []
-        )
+        issues = list(getattr(outcome_space_of(self.negotiator), "issues", None) or [])
         if not issues:
             return 0.0
         total = 0.0
@@ -890,8 +890,11 @@ class LLMValidation(LLMComponent, Validation):
         rewritten = str(data.get("rewritten") or "").strip()
         return ValidationResult(
             ok=False,
-            issues=tuple(str(i) for i in (data.get("issues") or ())) or ("inconsistent",),
-            revised=Utterance(text=rewritten, data=utterance.data) if rewritten else None,
+            issues=tuple(str(i) for i in (data.get("issues") or ()))
+            or ("inconsistent",),
+            revised=Utterance(text=rewritten, data=utterance.data)
+            if rewritten
+            else None,
         )
 
 
