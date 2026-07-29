@@ -41,6 +41,7 @@ from negmas_llm.config import (
     resolve_llm_config,
 )
 from negmas_llm.tags import process_prompt as _process_prompt
+from negmas_llm.token_usage import TokenUsage
 from negmas_llm.ufun_tools import UFUN_TOOL_SPECS, run_ufun_tool
 
 if TYPE_CHECKING:
@@ -532,6 +533,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         self._conversation_history: list[dict[str, str]] = []
         # Track if preferences have been sent
         self._preferences_sent: bool = False
+        self.token_usage = TokenUsage()
 
     def get_model_string(self) -> str:
         """Get the model string for litellm.
@@ -749,7 +751,9 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         start_time = time.perf_counter()
         response_text = ""
         for _round in range(_MAX_TOOL_ROUNDS + 1):
+            call_start = time.perf_counter()
             response = litellm.completion(**kwargs)
+            self.token_usage.add(response, seconds=time.perf_counter() - call_start)
             model_response = cast(ModelResponse, response)
             choices = cast(list["Choices"], model_response.choices)
             message = choices[0].message

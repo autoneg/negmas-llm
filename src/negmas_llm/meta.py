@@ -36,6 +36,7 @@ from negmas_llm.config import (
     resolve_llm_config,
 )
 from negmas_llm.tags import process_prompt
+from negmas_llm.token_usage import TokenUsage
 from negmas_llm.ufun_tools import UFUN_TOOL_SPECS, run_ufun_tool
 
 DEFAULT_OLLAMA_MODEL = DEFAULT_MODELS.get("ollama", "qwen3:4b-instruct")
@@ -282,6 +283,7 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         )
         self.enforce_base_offer = enforce_base_offer
         self.enforce_base_response = enforce_base_response
+        self.token_usage = TokenUsage()
 
         # Track received messages for context
         self._received_messages: list[dict[str, Any]] = []
@@ -631,7 +633,9 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         start_time = time.perf_counter()
         response_text = ""
         for _round in range(_MAX_TOOL_ROUNDS + 1):
+            call_start = time.perf_counter()
             response = litellm.completion(**kwargs)
+            self.token_usage.add(response, seconds=time.perf_counter() - call_start)
             model_response = cast(ModelResponse, response)
             choices = cast(list["Choices"], model_response.choices)
             message = choices[0].message

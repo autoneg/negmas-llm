@@ -51,6 +51,7 @@ from negmas_llm.pablove import (
     Validation,
     ValidationResult,
 )
+from negmas_llm.token_usage import TokenUsage
 
 __all__ = [
     "LLMComponent",
@@ -104,6 +105,7 @@ class LLMComponent:
     num_retries: int | None = field(default=None, kw_only=True)
     verbose: bool = field(default=False, kw_only=True)
     llm_kwargs: dict[str, Any] = field(factory=dict, kw_only=True)
+    token_usage: TokenUsage = field(factory=TokenUsage, init=False)
     _resolved: Any = field(default=None, init=False)
 
     def _config(self):
@@ -163,6 +165,8 @@ class LLMComponent:
 
         start = time.perf_counter()
         response = litellm.completion(**kwargs)
+        elapsed = time.perf_counter() - start
+        self.token_usage.add(response, seconds=elapsed)
         # Read structurally rather than by isinstance: litellm returns several
         # response types across providers, and an over-strict check would
         # silently yield an empty string instead of the model's answer.
@@ -173,7 +177,7 @@ class LLMComponent:
         if self.verbose:
             print(
                 f"[{type(self).__name__} {cfg.provider}/{cfg.model} "
-                f"{time.perf_counter() - start:.1f}s]\n  << {user[-300:]}\n  >> {text[:300]}"
+                f"{elapsed:.1f}s]\n  << {user[-300:]}\n  >> {text[:300]}"
             )
         return text
 
