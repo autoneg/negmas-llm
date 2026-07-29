@@ -157,6 +157,22 @@ class TurnContext:
     ``bid`` is *our* outcome and is populated on ``propose``. They are separate
     fields on purpose: collapsing them into one "outcome" whose meaning depends
     on the entry point is a known source of subtle bugs.
+
+    ``their_offer`` is always a plain ``Outcome``, never an ``ExtendedOutcome``:
+    negmas unbundles the two once an offer reaches the mechanism, storing them
+    as separate ``ThreadState.new_offer`` / ``ThreadState.new_data`` fields.
+    ``their_data`` is that second half — the partner's raw payload (their
+    ``"text"`` key included, when they sent one) — populated on ``respond``
+    from ``state.threads[source].new_data``.
+
+    ``history`` is every earlier turn, oldest first. It is a *view* over the
+    negotiator's own growing turn log, not a per-turn copy: materializing a
+    fresh tuple of everything-so-far on every single turn would cost O(n) time
+    and space each time, i.e. O(n^2) over an n-turn negotiation. Instead each
+    ``TurnContext`` stores a reference to the same underlying list plus the
+    length it had at creation time, so building the tuple is deferred to
+    whoever actually reads ``history`` (and ``last``/``perception_this_step``
+    below walk the list directly instead of going through ``history`` at all).
     """
 
     entry: Literal["propose", "respond"]
@@ -164,6 +180,7 @@ class TurnContext:
     source: str | None = None
     dest: str | None = None
     their_offer: Outcome | None = None
+    their_data: dict[str, Any] | None = None
 
     perception: PerceptionResult | None = None
     beliefs: Any = None
@@ -177,7 +194,20 @@ class TurnContext:
     #: that a repair happened at all.
     revalidations: int = 0
 
-    history: tuple[TurnContext, ...] = ()
+    #: Reference to the owning negotiator's ``_turns`` list (shared, not
+    #: copied) plus the length it had when this turn was opened. Together
+    #: they define the ``history`` prefix without duplicating it per turn.
+    _history_all: list[TurnContext] | None = field(
+        default=None, repr=False, compare=False, init=False
+    )
+    _history_len: int = field(default=0, repr=False, compare=False, init=False)
+
+    @property
+    def history(self) -> tuple[TurnContext, ...]:
+        """Every turn before this one, oldest first."""
+        if self._history_all is None:
+            return ()
+        return tuple(self._history_all[: self._history_len])
 
     @property
     def step(self) -> int:
@@ -193,7 +223,10 @@ class TurnContext:
         self, entry: Literal["propose", "respond"] | None = None
     ) -> TurnContext | None:
         """The most recent previous turn, optionally of a given entry point."""
-        for ctx in reversed(self.history):
+        if self._history_all is None:
+            return None
+        for i in range(self._history_len - 1, -1, -1):
+            ctx = self._history_all[i]
             if entry is None or ctx.entry == entry:
                 return ctx
         return None
@@ -206,7 +239,10 @@ class TurnContext:
         """
         if self.perception is not None:
             return self.perception
-        for ctx in reversed(self.history):
+        if self._history_all is None:
+            return None
+        for i in range(self._history_len - 1, -1, -1):
+            ctx = self._history_all[i]
             if ctx.step != self.step:
                 break
             if ctx.perception is not None:
@@ -377,6 +413,9 @@ class PABLOveNegotiator(MAPNegotiator):
         #: `TurnContext`, which is strictly turn-scoped; conflating the two is
         #: how "which turn was that from?" bugs start.
         self.shared: dict[str, Any] = {}
+        #: Rescued in `respond_`, read in `respond`: see that method.
+        self._pending_their_offer: Outcome | None = None
+        self._pending_their_data: dict[str, Any] | None = None
 
         super().__init__(
             *args,
@@ -416,6 +455,7 @@ class PABLOveNegotiator(MAPNegotiator):
         source: str | None = None,
         dest: str | None = None,
         their_offer: Outcome | None = None,
+        their_data: dict[str, Any] | None = None,
     ) -> TurnContext:
         ctx = TurnContext(
             entry=entry,
@@ -423,8 +463,11 @@ class PABLOveNegotiator(MAPNegotiator):
             source=source,
             dest=dest,
             their_offer=their_offer,
-            history=tuple(self._turns),
+            their_data=their_data,
         )
+        # Shared reference, not a copy: see TurnContext.history.
+        ctx._history_all = self._turns
+        ctx._history_len = len(self._turns)
         self._turn = ctx
         return ctx
 
@@ -501,6 +544,30 @@ class PABLOveNegotiator(MAPNegotiator):
         finally:
             self._close_turn()
 
+    def respond_(
+        self, state: Any, source: str | None = None
+    ) -> ResponseType | ExtendedResponseType:
+        """Rescue the partner's offer and payload before they can be dropped.
+
+        When this negotiator runs inside an ``SAOMechanism`` (the common
+        case: PABLO-ve components are ordinary GB negotiators wrapped for the
+        classic alternating-offers protocol), the mechanism calls
+        ``respond_`` with a real ``SAOState`` whose ``current_offer`` /
+        ``current_data`` hold the partner's move. ``GBNegotiator.respond_``
+        (the base class) then converts it into the ``GBState`` that
+        :meth:`respond` sees via ``_gb_state_from_sao_state`` — but that
+        conversion builds ``state.threads`` from ``self.nmi.negotiator_ids``,
+        which is empty for this adapter, so ``state.threads`` ends up with no
+        entries at all. Both fields are lost unless captured here first.
+        Under a native ``GBMechanism`` the mechanism calls :meth:`respond`
+        directly, bypassing this method entirely, and
+        ``state.threads[source].new_offer`` / ``.new_data`` (read in
+        :meth:`respond`) are already correct.
+        """
+        self._pending_their_offer = getattr(state, "current_offer", None)
+        self._pending_their_data = getattr(state, "current_data", None)
+        return super().respond_(state, source=source)
+
     def respond(
         self, state: GBState, source: str | None = None
     ) -> ResponseType | ExtendedResponseType:
@@ -513,8 +580,23 @@ class PABLOveNegotiator(MAPNegotiator):
         if self.is_plain_boa:
             return super().respond(state, source=source)
 
-        their_offer = getattr(state, "current_offer", None)
-        ctx = self._open_turn("respond", state, source=source, their_offer=their_offer)
+        # GBState has no `current_offer` (that's an SAOState/STState thing);
+        # the offer and its accompanying payload normally arrive as two
+        # separate fields on the sender's thread. Under the SAO-mechanism
+        # compatibility shim that thread is missing entirely (see
+        # `respond_`), so fall back to what was rescued there.
+        thread = state.threads.get(source) if source else None
+        their_offer = (thread.new_offer if thread else None) or (
+            self._pending_their_offer
+        )
+        their_data = (thread.new_data if thread else None) or (self._pending_their_data)
+        ctx = self._open_turn(
+            "respond",
+            state,
+            source=source,
+            their_offer=their_offer,
+            their_data=their_data,
+        )
         try:
             self._run_perception(ctx)
             if self._run_ending(ctx, "early"):
@@ -573,6 +655,8 @@ class PABLOveNegotiator(MAPNegotiator):
         self._turns = []
         self._turn = None
         self.shared = {}
+        self._pending_their_offer = None
+        self._pending_their_data = None
 
 
 def make_pablove(

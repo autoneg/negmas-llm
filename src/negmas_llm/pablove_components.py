@@ -346,7 +346,7 @@ class LLMPerception(LLMComponent, Perception):
 
     def _from_wire(self, ctx: TurnContext) -> PerceptionResult | None:
         """Typed acts published by a cooperating partner, if any."""
-        data = getattr(ctx.state, "current_data", None)
+        data = ctx.their_data
         if not isinstance(data, dict):
             return None
         for key, value in data.items():
@@ -363,13 +363,9 @@ class LLMPerception(LLMComponent, Perception):
 
     @staticmethod
     def _text_of(ctx: TurnContext) -> str:
-        data = getattr(ctx.state, "current_data", None)
+        data = ctx.their_data
         if isinstance(data, dict) and data.get("text"):
             return str(data["text"])
-        for entry in reversed(getattr(ctx.state, "new_data", None) or []):
-            payload = entry[1] if isinstance(entry, tuple) else entry
-            if isinstance(payload, dict) and payload.get("text"):
-                return str(payload["text"])
         return ""
 
     def perceive(self, ctx: TurnContext) -> PerceptionResult:

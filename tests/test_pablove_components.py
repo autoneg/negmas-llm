@@ -173,8 +173,12 @@ def test_perception_prefers_the_wire_over_a_classifier_call(domain):
     perc = LLMPerception()
     m = SAOMechanism(outcome_space=os_, n_steps=4)
     state = m.state
-    state.current_data = {"text": "here", "act": {"acts": ["concede", "justify"]}}
-    ctx = TurnContext(entry="respond", state=state, their_offer=(100, 1))
+    ctx = TurnContext(
+        entry="respond",
+        state=state,
+        their_offer=(100, 1),
+        their_data={"text": "here", "act": {"acts": ["concede", "justify"]}},
+    )
     with patch("litellm.completion", side_effect=AssertionError("should not classify")):
         result = perc.perceive(ctx)
     assert result.source == "wire"
@@ -185,8 +189,12 @@ def test_perception_classifies_when_there_is_no_typed_data(domain):
     os_, u1, _ = domain
     perc = LLMPerception()
     state = SAOMechanism(outcome_space=os_, n_steps=4).state
-    state.current_data = {"text": "That is too expensive for us."}
-    ctx = TurnContext(entry="respond", state=state, their_offer=(200, 1))
+    ctx = TurnContext(
+        entry="respond",
+        state=state,
+        their_offer=(200, 1),
+        their_data={"text": "That is too expensive for us."},
+    )
     payload = json.dumps(
         {
             "acts": ["refuse"],
@@ -219,8 +227,12 @@ def test_malformed_perception_degrades_instead_of_raising(domain):
     os_, u1, _ = domain
     perc = LLMPerception()
     state = SAOMechanism(outcome_space=os_, n_steps=4).state
-    state.current_data = {"text": "hello"}
-    ctx = TurnContext(entry="respond", state=state, their_offer=(200, 1))
+    ctx = TurnContext(
+        entry="respond",
+        state=state,
+        their_offer=(200, 1),
+        their_data={"text": "hello"},
+    )
     with patch("litellm.completion", side_effect=lambda *a, **k: _mock("not json")):
         result = perc.perceive(ctx)
     assert result.source == "classified" and result.acts == ()

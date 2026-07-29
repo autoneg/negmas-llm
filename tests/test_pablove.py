@@ -148,7 +148,7 @@ class KeywordPerception(Perception):
     """Rule-based perceiver: no LLM, so the pipeline is testable offline."""
 
     def perceive(self, ctx: TurnContext) -> PerceptionResult:
-        data = getattr(ctx.state, "current_data", None) or {}
+        data = ctx.their_data or {}
         text = str(data.get("text", "")) if isinstance(data, dict) else ""
         acts = []
         low = text.lower()
