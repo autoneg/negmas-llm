@@ -450,17 +450,20 @@ class PABLOveNegotiator(MAPNegotiator):
 
     @property
     def opponent_model(self) -> Model | None:
-        """The ``O`` (opponent model) component, if any.
+        """Alias ``self.opponent_ufun`` under the name some policies expect.
 
-        Some offering/acceptance policies from negmas's own catalogue (e.g.
+        `MAPNegotiator.__init__` already filters ``models=`` for `UFunModel`
+        instances and registers the first one as ``self.private_info["opponent_ufun"]``
+        (exposed via the base `Negotiator.opponent_ufun` property) -- so a
+        `PABLOveNegotiator` constructed with a `UFunModel` ``model=`` already
+        has this, correctly, with no extra wiring. The only real gap: some of
+        negmas's own offering/acceptance policies (e.g.
         ``NiceTitForTatOfferingPolicy``) read ``self.negotiator.opponent_model``
-        directly rather than taking it as a constructor argument, matching the
-        property `NiceTitForTatNegotiator` itself exposes. `PABLOveNegotiator`
-        only ever registers at most one model (the ``model=`` constructor
-        argument, stored in ``self._models``), so this is exactly that model,
-        under the name such components expect.
+        instead of ``opponent_ufun`` -- a naming difference from
+        `NiceTitForTatNegotiator`'s own property, not a missing mechanism.
+        This is that one-line bridge, not a reimplementation.
         """
-        return self._models[0] if self._models else None
+        return self.opponent_ufun
 
     def _open_turn(
         self,
