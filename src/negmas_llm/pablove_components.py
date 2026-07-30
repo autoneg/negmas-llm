@@ -52,6 +52,12 @@ from negmas_llm.pablove import (
     ValidationResult,
 )
 from negmas_llm.token_usage import TokenUsage
+from negmas_llm.ufun_tools import (
+    MAX_TOOL_ROUNDS,
+    UFUN_TOOL_SPECS,
+    assistant_tool_call_entry,
+    tool_result_messages,
+)
 
 __all__ = [
     "LLMComponent",
@@ -90,6 +96,18 @@ class LLMComponent:
         max_words: Approximate length of the generated text, stated in the
             prompt. This — not ``max_tokens`` — is how answer length is bounded.
         verbose: Print prompts and responses.
+        use_ufun_tools: If True, offer the LLM function tools that compute the
+            negotiator's own utility function in-process (evaluate an outcome,
+            min/max, best/worst, and the inverter operations -- see
+            :mod:`negmas_llm.ufun_tools`), instead of leaving it to estimate
+            utilities from the serialized prompt alone. Default is True: an
+            LLM reasoning about its own utility function from the prompt text
+            is prone to misreading it (e.g. defaulting to a "larger number is
+            better" prior on an ordinal-looking issue whose mapping actually
+            runs the other way), and the tool gives it a way to check instead
+            of guess. Set False for a provider/model that does not handle
+            tool-calling reliably. Requires ``self.negotiator.ufun`` to be set
+            to have any effect.
         llm_kwargs: Extra keyword arguments for ``litellm.completion``.
     """
 
@@ -104,6 +122,7 @@ class LLMComponent:
     timeout: float | int | None = field(default=None, kw_only=True)
     num_retries: int | None = field(default=None, kw_only=True)
     verbose: bool = field(default=False, kw_only=True)
+    use_ufun_tools: bool = field(default=True, kw_only=True)
     llm_kwargs: dict[str, Any] = field(factory=dict, kw_only=True)
     token_usage: TokenUsage = field(factory=TokenUsage, init=False)
     _resolved: Any = field(default=None, init=False)
@@ -135,6 +154,13 @@ class LLMComponent:
     def call_llm(self, system: str, user: str) -> str:
         """Send one system/user exchange and return the raw response text.
 
+        When :attr:`use_ufun_tools` is set and this component is attached to a
+        negotiator with a ufun, the model is offered the utility-function tools
+        (see :mod:`negmas_llm.ufun_tools`) and the exchange loops -- executing
+        any requested tool calls in-process and feeding results back -- until
+        the model gives a final, non-tool-call answer or :data:`MAX_TOOL_ROUNDS`
+        is reached.
+
         Args:
             system: The system prompt.
             user: The user message.
@@ -143,12 +169,15 @@ class LLMComponent:
             The model's text response (empty string if it returned none).
         """
         cfg = self._config()
+        ufun = getattr(getattr(self, "negotiator", None), "ufun", None)
+        tools_enabled = self.use_ufun_tools and ufun is not None
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
         kwargs: dict[str, Any] = {
             "model": litellm_model_string(cfg.provider, cfg.model),
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            "messages": messages,
             **self.llm_kwargs,
         }
         apply_temperature(kwargs, cfg.provider, cfg.model, cfg.temperature)
@@ -162,18 +191,39 @@ class LLMComponent:
             kwargs["timeout"] = cfg.timeout
         if cfg.num_retries is not None:
             kwargs["num_retries"] = cfg.num_retries
+        if tools_enabled:
+            kwargs["tools"] = UFUN_TOOL_SPECS
+
+        def _log_tool_call(name: str, arguments: str, result: Any) -> None:
+            if self.verbose:
+                print(
+                    f"  [{type(self).__name__} ufun tool] {name}({arguments}) -> {result}"
+                )
 
         start = time.perf_counter()
-        response = litellm.completion(**kwargs)
+        text = ""
+        for _round in range(MAX_TOOL_ROUNDS + 1):
+            call_start = time.perf_counter()
+            response = litellm.completion(**kwargs)
+            self.token_usage.add(response, seconds=time.perf_counter() - call_start)
+            # Read structurally rather than by isinstance: litellm returns
+            # several response types across providers, and an over-strict
+            # check would silently yield an empty string instead of the
+            # model's answer.
+            try:
+                message = response.choices[0].message  # type: ignore[index,union-attr]
+            except (AttributeError, IndexError, TypeError):
+                break
+            tool_calls = getattr(message, "tool_calls", None) if tools_enabled else None
+            if tool_calls:
+                messages.append(assistant_tool_call_entry(message, tool_calls))
+                messages.extend(
+                    tool_result_messages(tool_calls, ufun, on_call=_log_tool_call)
+                )
+                continue
+            text = message.content or ""
+            break
         elapsed = time.perf_counter() - start
-        self.token_usage.add(response, seconds=elapsed)
-        # Read structurally rather than by isinstance: litellm returns several
-        # response types across providers, and an over-strict check would
-        # silently yield an empty string instead of the model's answer.
-        try:
-            text = response.choices[0].message.content or ""  # type: ignore[index,union-attr]
-        except (AttributeError, IndexError, TypeError):
-            text = ""
         if self.verbose:
             print(
                 f"[{type(self).__name__} {cfg.provider}/{cfg.model} "

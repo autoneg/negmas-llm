@@ -42,7 +42,12 @@ from negmas_llm.config import (
 )
 from negmas_llm.tags import process_prompt as _process_prompt
 from negmas_llm.token_usage import TokenUsage
-from negmas_llm.ufun_tools import UFUN_TOOL_SPECS, run_ufun_tool
+from negmas_llm.ufun_tools import (
+    MAX_TOOL_ROUNDS,
+    UFUN_TOOL_SPECS,
+    assistant_tool_call_entry,
+    tool_result_messages,
+)
 
 if TYPE_CHECKING:
     from litellm.types.utils import Choices
@@ -70,25 +75,6 @@ __all__ = [
     "DeepSeekNegotiator",
     "DashScopeNegotiator",
 ]
-
-
-def _assistant_tool_call_entry(message: Any, tool_calls: Any) -> dict[str, Any]:
-    """Build an OpenAI-format assistant message carrying tool-call requests."""
-    return {
-        "role": "assistant",
-        "content": message.content or "",
-        "tool_calls": [
-            {
-                "id": tc.id,
-                "type": getattr(tc, "type", "function") or "function",
-                "function": {
-                    "name": tc.function.name,
-                    "arguments": tc.function.arguments,
-                },
-            }
-            for tc in tool_calls
-        ],
-    }
 
 
 def _dedent(text: str) -> str:
@@ -299,10 +285,6 @@ _STRUCTURED_OUTPUT_PROVIDERS: frozenset[str] = frozenset(
     }
 )
 
-# Maximum number of consecutive tool-call rounds (see `use_ufun_tools`) before
-# forcing a final answer.
-_MAX_TOOL_ROUNDS = 5
-
 # Headers required for GitHub Copilot (simulates IDE client)
 _GITHUB_COPILOT_HEADERS: dict[str, str] = {
     "editor-version": "vscode/1.85.1",
@@ -386,9 +368,14 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             own utility function in-process (evaluate an outcome, min/max,
             best/worst, and the inverter operations some/all/one_in/best_in/
             worst_in -- see :mod:`negmas_llm.ufun_tools`), instead of leaving
-            it to estimate utilities from the prompt. Default is False: not
-            every provider/model handles tool-calling reliably, and enabling
-            it forces JSON-schema structured output off for this negotiator
+            it to estimate utilities from the prompt. Default is True: an LLM
+            reasoning about its own utility function from the serialized
+            prompt alone is prone to misreading it (e.g. defaulting to a
+            "larger number is better" prior on an ordinal-looking issue whose
+            mapping actually runs the other way), and the tool gives it a way
+            to check instead of guess. Set False for a provider/model that
+            does not handle tool-calling reliably; note that enabling it
+            forces JSON-schema structured output off for this negotiator
             (tool-calling and a strict ``response_format`` cannot be combined
             in the same request; the existing regex-based JSON extraction in
             :meth:`_parse_llm_response` is used instead). Each round the tool
@@ -451,7 +438,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         timeout: float | int | None = None,
         num_retries: int | None = None,
         use_structured_output: bool = True,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         include_reasoning: bool = False,
         raise_on_parsing_error: bool = False,
         verbose: bool = False,
@@ -750,7 +737,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         # model gives a final (non-tool-call) answer.
         start_time = time.perf_counter()
         response_text = ""
-        for _round in range(_MAX_TOOL_ROUNDS + 1):
+        for _round in range(MAX_TOOL_ROUNDS + 1):
             call_start = time.perf_counter()
             response = litellm.completion(**kwargs)
             self.token_usage.add(response, seconds=time.perf_counter() - call_start)
@@ -760,26 +747,22 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             tool_calls = getattr(message, "tool_calls", None) if tools_enabled else None
 
             if tool_calls:
-                call_messages.append(_assistant_tool_call_entry(message, tool_calls))
-                for tc in tool_calls:
-                    try:
-                        arguments = json.loads(tc.function.arguments or "{}")
-                    except json.JSONDecodeError:
-                        arguments = {}
-                    result = run_ufun_tool(self.ufun, tc.function.name, arguments)  # type: ignore[arg-type]
+                call_messages.append(assistant_tool_call_entry(message, tool_calls))
+
+                def _log_tool_call(name: str, arguments: str, result: Any) -> None:
                     if self.verbose and console:
                         console.print(
-                            f"[dim green]ufun tool {tc.function.name}"
-                            f"({tc.function.arguments}) -> {result}[/dim green]"
+                            f"[dim green]ufun tool {name}"
+                            f"({arguments}) -> {result}[/dim green]"
                         )
-                    call_messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "name": tc.function.name,
-                            "content": json.dumps(result),
-                        }
+
+                call_messages.extend(
+                    tool_result_messages(
+                        tool_calls,
+                        self.ufun,  # type: ignore[arg-type]
+                        on_call=_log_tool_call,
                     )
+                )
                 continue
 
             response_text = message.content or ""

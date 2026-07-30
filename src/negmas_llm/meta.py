@@ -37,13 +37,14 @@ from negmas_llm.config import (
 )
 from negmas_llm.tags import process_prompt
 from negmas_llm.token_usage import TokenUsage
-from negmas_llm.ufun_tools import UFUN_TOOL_SPECS, run_ufun_tool
+from negmas_llm.ufun_tools import (
+    MAX_TOOL_ROUNDS,
+    UFUN_TOOL_SPECS,
+    assistant_tool_call_entry,
+    tool_result_messages,
+)
 
 DEFAULT_OLLAMA_MODEL = DEFAULT_MODELS.get("ollama", "qwen3:4b-instruct")
-
-# Maximum number of consecutive tool-call rounds (see `use_ufun_tools`) before
-# forcing a final answer.
-_MAX_TOOL_ROUNDS = 5
 
 if TYPE_CHECKING:
     from litellm.types.utils import Choices
@@ -87,25 +88,6 @@ def _dedent(text: str) -> str:
     if text.startswith("\n"):
         text = text[1:]
     return textwrap.dedent(text)
-
-
-def _assistant_tool_call_entry(message: Any, tool_calls: Any) -> dict[str, Any]:
-    """Build an OpenAI-format assistant message carrying tool-call requests."""
-    return {
-        "role": "assistant",
-        "content": message.content or "",
-        "tool_calls": [
-            {
-                "id": tc.id,
-                "type": getattr(tc, "type", "function") or "function",
-                "function": {
-                    "name": tc.function.name,
-                    "arguments": tc.function.arguments,
-                },
-            }
-            for tc in tool_calls
-        ],
-    }
 
 
 def is_meta_negotiator_available() -> bool:
@@ -180,9 +162,12 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
             it to estimate utilities from the prompt. Applies to every LLM
             call this negotiator makes (text generation and, when
             ``enforce_base_offer``/``enforce_base_response`` is False, the
-            outcome/response decision). Default is False: not every
-            provider/model handles tool-calling reliably, and it requires
-            ``self.ufun`` to be set to have any effect. ``share_ufun=True``
+            outcome/response decision). Default is True: an LLM reasoning
+            about its own utility function from the serialized prompt alone
+            is prone to misreading it, and the tool gives it a way to check
+            instead of guess. Set False for a provider/model that does not
+            handle tool-calling reliably; it also requires ``self.ufun`` to
+            be set to have any effect. ``share_ufun=True``
             (the default) propagates *this* negotiator's own ufun DOWN to the
             base negotiator on join -- not the other way around -- so give
             the ufun to this constructor (``ufun=``/``preferences=``, which
@@ -242,7 +227,7 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         enforce_base_offer: bool = True,
         enforce_base_response: bool = True,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -293,7 +278,7 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         resolved: Any,
         *,
         verbose: bool,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None,
         llm_kwargs: dict[str, Any] | None,
     ) -> None:
@@ -632,7 +617,7 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
         # model gives a final (non-tool-call) answer.
         start_time = time.perf_counter()
         response_text = ""
-        for _round in range(_MAX_TOOL_ROUNDS + 1):
+        for _round in range(MAX_TOOL_ROUNDS + 1):
             call_start = time.perf_counter()
             response = litellm.completion(**kwargs)
             self.token_usage.add(response, seconds=time.perf_counter() - call_start)
@@ -642,26 +627,22 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
             tool_calls = getattr(message, "tool_calls", None) if tools_enabled else None
 
             if tool_calls:
-                call_messages.append(_assistant_tool_call_entry(message, tool_calls))
-                for tc in tool_calls:
-                    try:
-                        arguments = json.loads(tc.function.arguments or "{}")
-                    except json.JSONDecodeError:
-                        arguments = {}
-                    result = run_ufun_tool(self.ufun, tc.function.name, arguments)  # type: ignore[arg-type]
+                call_messages.append(assistant_tool_call_entry(message, tool_calls))
+
+                def _log_tool_call(name: str, arguments: str, result: Any) -> None:
                     if self.verbose and console:
                         console.print(
-                            f"[dim green]ufun tool {tc.function.name}"
-                            f"({tc.function.arguments}) -> {result}[/dim green]"
+                            f"[dim green]ufun tool {name}"
+                            f"({arguments}) -> {result}[/dim green]"
                         )
-                    call_messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "name": tc.function.name,
-                            "content": json.dumps(result),
-                        }
+
+                call_messages.extend(
+                    tool_result_messages(
+                        tool_calls,
+                        self.ufun,  # type: ignore[arg-type]
+                        on_call=_log_tool_call,
                     )
+                )
                 continue
 
             response_text = message.content or ""
@@ -1187,7 +1168,7 @@ class LLMAspirationNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1246,7 +1227,7 @@ class LLMBoulwareTBNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1305,7 +1286,7 @@ class LLMConcederTBNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1363,7 +1344,7 @@ class LLMLinearTBNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1421,7 +1402,7 @@ class LLMTimeBasedConcedingNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1479,7 +1460,7 @@ class LLMTimeBasedNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1537,7 +1518,7 @@ class LLMNiceNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1594,7 +1575,7 @@ class LLMToughNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1652,7 +1633,7 @@ class LLMNaiveTitForTatNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1710,7 +1691,7 @@ class LLMRandomNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1768,7 +1749,7 @@ class LLMRandomAlwaysAcceptingNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1825,7 +1806,7 @@ class LLMCABNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1882,7 +1863,7 @@ class LLMCANNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1939,7 +1920,7 @@ class LLMCARNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1996,7 +1977,7 @@ class LLMMiCRONegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -2053,7 +2034,7 @@ class LLMFastMiCRONegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -2110,7 +2091,7 @@ class LLMUtilBasedNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -2167,7 +2148,7 @@ class LLMWARNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -2224,7 +2205,7 @@ class LLMWANNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -2281,7 +2262,7 @@ class LLMWABNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -2338,7 +2319,7 @@ class LLMLimitedOutcomesNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -2395,7 +2376,7 @@ class LLMLimitedOutcomesAcceptor(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -2454,7 +2435,7 @@ class LLMHybridNegotiator(LLMMetaNegotiator):
         temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -2532,7 +2513,7 @@ class LLMNegotiatorWithRecommender(LLMMetaNegotiator):
         timeout: float | int | None = None,
         num_retries: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -2604,7 +2585,7 @@ class LLMEnhancedNegotiator(LLMMetaNegotiator):
         timeout: float | int | None = None,
         num_retries: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -2683,7 +2664,7 @@ class LLMNegotiatorWithMultipleRecommenders(LLMMetaNegotiator):
         timeout: float | int | None = None,
         num_retries: int | None = None,
         verbose: bool = False,
-        use_ufun_tools: bool = False,
+        use_ufun_tools: bool = True,
         system_prompt: str | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,

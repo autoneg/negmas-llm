@@ -232,10 +232,10 @@ class TestLLMNegotiatorToolLoop:
         ) as mock:
             result = negotiator._call_llm([{"role": "user", "content": "decide"}])
         assert result == ""
-        # _MAX_TOOL_ROUNDS + 1 total attempts.
-        from negmas_llm.negotiator import _MAX_TOOL_ROUNDS
+        # MAX_TOOL_ROUNDS + 1 total attempts.
+        from negmas_llm.ufun_tools import MAX_TOOL_ROUNDS
 
-        assert mock.call_count == _MAX_TOOL_ROUNDS + 1
+        assert mock.call_count == MAX_TOOL_ROUNDS + 1
 
     def test_no_tools_without_ufun(self):
         negotiator = LLMNegotiator(
@@ -308,12 +308,12 @@ class TestLLMMetaNegotiatorToolLoop:
         assert mock.call_args is not None
         assert "tools" in mock.call_args.kwargs
 
-    def test_default_is_disabled(self, negotiation_ufun):
+    def test_default_is_enabled(self, negotiation_ufun):
         base = BoulwareTBNegotiator(ufun=negotiation_ufun)
         meta = LLMMetaNegotiator(
             base_negotiator=base, provider="ollama", model="test-model"
         )
-        assert meta.use_ufun_tools is False
+        assert meta.use_ufun_tools is True
 
     def test_tool_call_round_trip(self, negotiation_ufun):
         # `share_ufun=True` shares the META's own ufun DOWN to the base

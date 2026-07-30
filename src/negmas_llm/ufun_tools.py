@@ -16,15 +16,25 @@ in-process and returns a JSON-able result dict.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from negmas.outcomes import Outcome, OutcomeSpace
 from negmas.preferences import BaseUtilityFunction
 
 __all__ = [
+    "MAX_TOOL_ROUNDS",
     "UFUN_TOOL_SPECS",
+    "assistant_tool_call_entry",
     "run_ufun_tool",
+    "tool_result_messages",
 ]
+
+#: Hard cap on consecutive tool-call rounds within one LLM turn (propose,
+#: respond, or any other single decision) before giving up on tool use and
+#: taking whatever the model last returned. Bounds a model that never stops
+#: calling tools.
+MAX_TOOL_ROUNDS = 5
 
 #: Hard cap on how many outcomes a single ``invert_some``/``invert_all`` call
 #: returns, so a large or continuous outcome space cannot blow up the prompt.
@@ -332,3 +342,68 @@ def run_ufun_tool(
         return {"error": f"Unknown utility-function tool: {name}"}
     except Exception as e:  # noqa: BLE001 - a broken tool call must not crash
         return {"error": f"{type(e).__name__}: {e}"}
+
+
+def assistant_tool_call_entry(message: Any, tool_calls: Any) -> dict[str, Any]:
+    """Build an OpenAI-format assistant message carrying tool-call requests.
+
+    Args:
+        message: The model response message that requested the tool calls.
+        tool_calls: The ``tool_calls`` list off that message.
+
+    Returns:
+        A chat message dict to append to the conversation before the tool
+        results, so the next call sees the assistant's own request.
+    """
+    return {
+        "role": "assistant",
+        "content": message.content or "",
+        "tool_calls": [
+            {
+                "id": tc.id,
+                "type": getattr(tc, "type", "function") or "function",
+                "function": {
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments,
+                },
+            }
+            for tc in tool_calls
+        ],
+    }
+
+
+def tool_result_messages(
+    tool_calls: Any,
+    ufun: BaseUtilityFunction,
+    on_call: Any = None,
+) -> list[dict[str, Any]]:
+    """Execute every requested ufun tool call and return the tool messages.
+
+    Args:
+        tool_calls: The ``tool_calls`` list off a model response message.
+        ufun: The negotiator's own utility function to compute against.
+        on_call: Optional ``(name, arguments, result) -> None`` callback, e.g.
+            for verbose logging. Never raises into the loop itself.
+
+    Returns:
+        One ``{"role": "tool", ...}`` message per call, in order, ready to be
+        appended to the conversation before the next completion.
+    """
+    results = []
+    for tc in tool_calls:
+        try:
+            arguments = json.loads(tc.function.arguments or "{}")
+        except json.JSONDecodeError:
+            arguments = {}
+        result = run_ufun_tool(ufun, tc.function.name, arguments)
+        if on_call is not None:
+            on_call(tc.function.name, tc.function.arguments, result)
+        results.append(
+            {
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "name": tc.function.name,
+                "content": json.dumps(result),
+            }
+        )
+    return results

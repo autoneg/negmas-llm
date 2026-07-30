@@ -19,6 +19,11 @@ def create_mock_llm_response(
     mock_response = MagicMock()
     mock_response.choices = [MagicMock()]
     mock_response.choices[0].message.content = content
+    # A real no-tool-use response has tool_calls=None; leaving this to
+    # MagicMock's auto-attribute would make it a truthy Mock, and
+    # use_ufun_tools defaults to True, so every call would be (mis)treated as
+    # requesting a ufun tool call.
+    mock_response.choices[0].message.tool_calls = None
     mock_response.usage.prompt_tokens = prompt_tokens
     mock_response.usage.completion_tokens = completion_tokens
     mock_response.usage.total_tokens = prompt_tokens + completion_tokens

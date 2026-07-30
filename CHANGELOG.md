@@ -9,6 +9,21 @@ and this project adheres (loosely) to [Semantic Versioning](https://semver.org/s
 
 ### Changed
 
+- `use_ufun_tools` now defaults to `True` for `LLMNegotiator`, `LLMMetaNegotiator`
+  (and every named wrapper/subclass of both), and every PABLO-ve `LLMComponent`
+  (`LLMOffering`, `LLMAcceptance`, `LLMPerception`, `LLMLanguage`,
+  `LLMUFunModel`, `LLMValidation`, `LLMEnding`). An LLM reasoning about its own
+  utility function from the serialized prompt alone is prone to misreading it
+  -- e.g. defaulting to a "larger number is better" prior on an ordinal-looking
+  issue whose mapping actually runs the other way -- and the tool gives it a
+  way to check instead of guess. Pass `use_ufun_tools=False` to opt out for a
+  provider/model that does not handle tool-calling reliably.
+- PABLO-ve's `LLMComponent` (`negmas_llm.pablove_components`) gained a
+  `use_ufun_tools` field and now offers the same utility-function tools
+  (`negmas_llm.ufun_tools`) that `LLMNegotiator` already did, with the same
+  in-process tool-call round-trip loop (capped at `ufun_tools.MAX_TOOL_ROUNDS`
+  consecutive rounds). Previously only `LLMNegotiator`/`LLMMetaNegotiator`
+  could use these tools; PABLO-ve components had no path to them at all.
 - `OllamaNegotiator` now derives its default `api_base` from the `OLLAMA_HOST`
   environment variable (host:port, bare host, or full URL), matching how
   `ollama serve` chooses its listen address. Explicit `api_base` arguments

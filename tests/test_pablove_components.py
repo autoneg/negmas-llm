@@ -33,6 +33,10 @@ def _mock(content: str):
     r = MagicMock()
     r.choices = [MagicMock()]
     r.choices[0].message.content = content
+    # A real no-tool-use response has tool_calls=None; leaving this to
+    # MagicMock's auto-attribute would make it a truthy Mock and every call
+    # would be (mis)treated as requesting a ufun tool call.
+    r.choices[0].message.tool_calls = None
     return r
 
 
@@ -492,3 +496,103 @@ def test_each_component_resolves_its_own_model(monkeypatch):
 def test_explicit_argument_beats_the_environment(monkeypatch):
     monkeypatch.setenv("NEGMAS_LLM_LLMOffering_MODEL", "from-env")
     assert LLMOffering(model="explicit")._config().model == "explicit"
+
+
+# ---------------------------------------------------------------------------
+# Ufun tool-calling: on by default for every LLM component, opt-out, round
+# trip, and the round cap. Mirrors tests/test_ufun_tools.py's coverage of
+# LLMNegotiator's own tool loop -- same contract, PABLO-ve's component path.
+# ---------------------------------------------------------------------------
+
+
+from negmas_llm.ufun_tools import MAX_TOOL_ROUNDS, UFUN_TOOL_SPECS  # noqa: E402
+
+
+def _make_tool_call(call_id: str, name: str, arguments: dict) -> MagicMock:
+    tc = MagicMock()
+    tc.id = call_id
+    tc.type = "function"
+    tc.function.name = name
+    tc.function.arguments = json.dumps(arguments)
+    return tc
+
+
+def _tool_call_response(tool_calls: list) -> MagicMock:
+    response = MagicMock()
+    response.choices = [MagicMock()]
+    response.choices[0].message.content = None
+    response.choices[0].message.tool_calls = tool_calls
+    return response
+
+
+def test_use_ufun_tools_defaults_to_true_and_offers_tool_specs(domain):
+    """Every LLM component is tool-enabled out of the box, once it has a ufun."""
+    _, u1, _ = domain
+    offering = LLMOffering()
+    make_pablove(acceptance=AcceptTop(0), offering=offering, ufun=u1)
+    with patch(
+        "litellm.completion",
+        side_effect=lambda *a, **k: _mock(json.dumps({"outcome": [100, 1]})),
+    ) as mock:
+        offering.call_llm("system", "user")
+    assert mock.call_args.kwargs["tools"] == UFUN_TOOL_SPECS
+
+
+def test_use_ufun_tools_false_sends_no_tools(domain):
+    _, u1, _ = domain
+    offering = LLMOffering(use_ufun_tools=False)
+    make_pablove(acceptance=AcceptTop(0), offering=offering, ufun=u1)
+    with patch(
+        "litellm.completion",
+        side_effect=lambda *a, **k: _mock(json.dumps({"outcome": [100, 1]})),
+    ) as mock:
+        offering.call_llm("system", "user")
+    assert "tools" not in mock.call_args.kwargs
+
+
+def test_no_tools_without_a_ufun():
+    """A standalone component with no attached negotiator/ufun never offers tools."""
+    offering = LLMOffering()
+    with patch(
+        "litellm.completion",
+        side_effect=lambda *a, **k: _mock("{}"),
+    ) as mock:
+        offering.call_llm("system", "user")
+    assert "tools" not in mock.call_args.kwargs
+
+
+def test_ufun_tool_round_trip(domain):
+    """A requested tool call is executed in-process and fed back, then the
+    model's final answer is returned.
+    """
+    _, u1, _ = domain
+    offering = LLMOffering()
+    make_pablove(acceptance=AcceptTop(0), offering=offering, ufun=u1)
+    tool_call = _make_tool_call("call_1", "utility_max", {})
+    final = json.dumps({"outcome": [100, 1]})
+    responses = [_tool_call_response([tool_call]), _mock(final)]
+    with patch("litellm.completion", side_effect=responses) as mock:
+        text = offering.call_llm("system", "user")
+    assert text == final
+    assert mock.call_count == 2
+    # Second call carries the assistant tool-call request and the tool result.
+    second_messages = mock.call_args_list[1].kwargs["messages"]
+    assert second_messages[-2]["tool_calls"][0]["id"] == "call_1"
+    tool_message = second_messages[-1]
+    assert tool_message["role"] == "tool"
+    assert tool_message["tool_call_id"] == "call_1"
+    assert json.loads(tool_message["content"])["max"] == pytest.approx(1.0)
+
+
+def test_ufun_tool_loop_terminates_at_max_rounds(domain):
+    """A model that never stops calling tools does not hang the negotiation."""
+    _, u1, _ = domain
+    offering = LLMOffering()
+    make_pablove(acceptance=AcceptTop(0), offering=offering, ufun=u1)
+    infinite_tool_calls = _tool_call_response(
+        [_make_tool_call("call_x", "utility_max", {})]
+    )
+    with patch("litellm.completion", return_value=infinite_tool_calls) as mock:
+        text = offering.call_llm("system", "user")
+    assert text == ""
+    assert mock.call_count == MAX_TOOL_ROUNDS + 1
