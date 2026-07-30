@@ -694,7 +694,7 @@ def test_llm_language_falls_back_to_raw_text_without_a_perception_component(doma
 
 def test_llm_ufun_model_prompt_includes_text_without_a_perception_component(domain):
     os_, u1, _ = domain
-    model = LLMUFunModel(refresh_every=1)
+    model = LLMUFunModel()
     neg = make_pablove(
         acceptance=AcceptTop(0),
         offering=TimeBasedOfferingPolicy(),
@@ -709,7 +709,9 @@ def test_llm_ufun_model_prompt_includes_text_without_a_perception_component(doma
         their_data={"text": WATERMARK},
     )
     neg._turn = ctx
-    model.before_responding(state, (200, 1), None)
+    # Set the offer history directly rather than via `before_responding`,
+    # which would call `_estimate` a second time outside the patch below.
+    model._seen = [(200, 1)]
     seen: dict = {}
     with patch("litellm.completion", side_effect=_capture(seen)):
         model._estimate()
