@@ -18,6 +18,7 @@ from negmas.sao import AspirationNegotiator, ResponseType, SAOMechanism
 
 from negmas_llm.pablove import (
     Language,
+    PerceptionResult,
     TurnContext,
     Utterance,
     make_pablove,
@@ -596,3 +597,293 @@ def test_ufun_tool_loop_terminates_at_max_rounds(domain):
         text = offering.call_llm("system", "user")
     assert text == ""
     assert mock.call_count == MAX_TOOL_ROUNDS + 1
+
+
+# ---------------------------------------------------------------------------
+# Every component reads the opponent's outcome AND text
+#
+# Outcomes travel through `ctx.their_offer` / mechanism args; text travels
+# through `ctx.perception_this_step().text` (when a Perception component is
+# configured) or the raw `ctx.their_data["text"]` (when it is not). Every
+# LLM component that makes a decision about the opponent must put both into
+# its prompt -- reasoning about a partner's offer while blind to what they
+# said (or vice versa) defeats the point of a language-capable negotiator.
+# ---------------------------------------------------------------------------
+
+WATERMARK = "WATERMARK-OPPONENT-SAID-THIS"
+
+
+def _capture(seen):
+    def _fn(*a, **k):
+        seen.update(k)
+        return _mock("{}")
+
+    return _fn
+
+
+def _prompt_text(seen) -> str:
+    return "\n".join(m["content"] for m in seen["messages"])
+
+
+def _chain_turns(*ctxs: TurnContext) -> list[TurnContext]:
+    """Wire a sequence of turns into one shared history, `_open_turn`-style."""
+    turns: list[TurnContext] = []
+    for ctx in ctxs:
+        ctx._history_all = turns
+        ctx._history_len = len(turns)
+        turns.append(ctx)
+    return turns
+
+
+def test_llm_perception_prompt_includes_offer_and_text(domain):
+    os_, u1, _ = domain
+    perc = LLMPerception()
+    state = SAOMechanism(outcome_space=os_, n_steps=4).state
+    ctx = TurnContext(
+        entry="respond",
+        state=state,
+        their_offer=(200, 1),
+        their_data={"text": WATERMARK},
+    )
+    seen: dict = {}
+    with patch("litellm.completion", side_effect=_capture(seen)):
+        perc.perceive(ctx)
+    prompt = _prompt_text(seen)
+    assert WATERMARK in prompt
+    assert "200" in prompt
+
+
+def test_llm_language_prompt_includes_offer_and_text(domain):
+    os_, u1, _ = domain
+    lang = LLMLanguage()
+    state = SAOMechanism(outcome_space=os_, n_steps=4).state
+    ctx = TurnContext(
+        entry="respond",
+        state=state,
+        their_offer=(200, 1),
+        their_data={"text": WATERMARK},
+    )
+    ctx.perception = PerceptionResult(text=WATERMARK, source="classified")
+    ctx.acceptance = ResponseType.REJECT_OFFER
+    seen: dict = {}
+    with patch("litellm.completion", side_effect=_capture(seen)):
+        lang.realize(ctx)
+    prompt = _prompt_text(seen)
+    assert WATERMARK in prompt
+    assert "200" in prompt
+
+
+def test_llm_language_falls_back_to_raw_text_without_a_perception_component(domain):
+    """No `Perception` configured must not mean the opponent's words vanish."""
+    os_, u1, _ = domain
+    lang = LLMLanguage()
+    state = SAOMechanism(outcome_space=os_, n_steps=4).state
+    ctx = TurnContext(
+        entry="respond",
+        state=state,
+        their_offer=(200, 1),
+        their_data={"text": WATERMARK},
+    )
+    ctx.acceptance = ResponseType.REJECT_OFFER
+    assert ctx.perception is None
+    seen: dict = {}
+    with patch("litellm.completion", side_effect=_capture(seen)):
+        lang.realize(ctx)
+    assert WATERMARK in _prompt_text(seen)
+
+
+def test_llm_ufun_model_prompt_includes_text_without_a_perception_component(domain):
+    os_, u1, _ = domain
+    model = LLMUFunModel(refresh_every=1)
+    neg = make_pablove(
+        acceptance=AcceptTop(0),
+        offering=TimeBasedOfferingPolicy(),
+        model=model,
+        ufun=u1,
+    )
+    state = SAOMechanism(outcome_space=os_, n_steps=4).state
+    ctx = TurnContext(
+        entry="respond",
+        state=state,
+        their_offer=(200, 1),
+        their_data={"text": WATERMARK},
+    )
+    neg._turn = ctx
+    model.before_responding(state, (200, 1), None)
+    seen: dict = {}
+    with patch("litellm.completion", side_effect=_capture(seen)):
+        model._estimate()
+    prompt = _prompt_text(seen)
+    assert WATERMARK in prompt
+    assert "200" in prompt
+
+
+def test_llm_acceptance_prompt_includes_current_offer_and_text(domain):
+    os_, u1, _ = domain
+    acceptance = LLMAcceptance(use_ufun_tools=False)
+    neg = make_pablove(
+        acceptance=acceptance, offering=TimeBasedOfferingPolicy(), ufun=u1
+    )
+    state = SAOMechanism(outcome_space=os_, n_steps=4).state
+    ctx = TurnContext(
+        entry="respond",
+        state=state,
+        their_offer=(200, 1),
+        their_data={"text": WATERMARK},
+    )
+    neg._turn = ctx
+    seen: dict = {}
+    with patch("litellm.completion", side_effect=_capture(seen)):
+        acceptance(state, (200, 1), None)
+    prompt = _prompt_text(seen)
+    assert WATERMARK in prompt
+    assert "200" in prompt
+
+
+def test_llm_ending_prompt_includes_current_offer_and_text(domain):
+    os_, u1, _ = domain
+    ending = LLMEnding(min_time=0.0)
+    neg = make_pablove(
+        acceptance=AcceptTop(0), offering=TimeBasedOfferingPolicy(), ufun=u1
+    )
+    state = SAOMechanism(outcome_space=os_, n_steps=4).state
+    ctx = TurnContext(
+        entry="respond",
+        state=state,
+        their_offer=(200, 1),
+        their_data={"text": WATERMARK},
+    )
+    neg._turn = ctx
+    seen: dict = {}
+    with patch("litellm.completion", side_effect=_capture(seen)):
+        ending.should_end(ctx)
+    prompt = _prompt_text(seen)
+    assert WATERMARK in prompt
+    assert "200" in prompt
+
+
+def test_llm_offering_prompt_includes_history_offer_and_text(domain):
+    """`their_offer` is `None` on `propose` by design -- text must reach it
+    through history rather than the current turn."""
+    os_, u1, _ = domain
+    offering = LLMOffering(use_ufun_tools=False)
+    neg = make_pablove(acceptance=AcceptTop(0), offering=offering, ufun=u1)
+    state = SAOMechanism(outcome_space=os_, n_steps=4).state
+
+    respond_ctx = TurnContext(
+        entry="respond",
+        state=state,
+        their_offer=(200, 1),
+        their_data={"text": WATERMARK},
+    )
+    respond_ctx.perception = PerceptionResult(text=WATERMARK, source="classified")
+    propose_ctx = TurnContext(entry="propose", state=state)
+
+    neg._turns = _chain_turns(respond_ctx, propose_ctx)
+    neg._turn = propose_ctx
+
+    seen: dict = {}
+    with patch("litellm.completion", side_effect=_capture(seen)):
+        offering(state, dest=None)
+    prompt = _prompt_text(seen)
+    assert WATERMARK in prompt
+    assert "200" in prompt
+
+
+# ---------------------------------------------------------------------------
+# The limits above (text truncation, history depth, domain-value listing)
+# are per-component parameters, not hardcoded constants -- each is set here
+# to a distinctive, non-default value and the resulting prompt is checked.
+# ---------------------------------------------------------------------------
+
+
+def test_text_limit_truncates_long_opponent_text(domain):
+    os_, u1, _ = domain
+    long_text = "A" * 200
+    acceptance = LLMAcceptance(use_ufun_tools=False, text_limit=10)
+    neg = make_pablove(
+        acceptance=acceptance, offering=TimeBasedOfferingPolicy(), ufun=u1
+    )
+    state = SAOMechanism(outcome_space=os_, n_steps=4).state
+    ctx = TurnContext(
+        entry="respond",
+        state=state,
+        their_offer=(200, 1),
+        their_data={"text": long_text},
+    )
+    neg._turn = ctx
+    seen: dict = {}
+    with patch("litellm.completion", side_effect=_capture(seen)):
+        acceptance(state, (200, 1), None)
+    prompt = _prompt_text(seen)
+    assert long_text not in prompt
+    assert "A" * 10 not in prompt
+    assert "…" in prompt
+
+
+def test_history_turns_limits_how_far_back_the_prompt_looks(domain):
+    os_, u1, _ = domain
+    state = SAOMechanism(outcome_space=os_, n_steps=4).state
+
+    old_turn = TurnContext(
+        entry="respond",
+        state=state,
+        their_offer=(100, 1),
+        their_data={"text": "OLD-TURN-MARKER"},
+    )
+    recent_turn = TurnContext(
+        entry="respond",
+        state=state,
+        their_offer=(150, 2),
+        their_data={"text": "RECENT-TURN-MARKER"},
+    )
+    propose_ctx = TurnContext(entry="propose", state=state)
+    turns = _chain_turns(old_turn, recent_turn, propose_ctx)
+
+    for history_turns, expect_old in ((6, True), (1, False)):
+        offering = LLMOffering(use_ufun_tools=False, history_turns=history_turns)
+        neg = make_pablove(acceptance=AcceptTop(0), offering=offering, ufun=u1)
+        neg._turns = turns
+        neg._turn = propose_ctx
+        seen: dict = {}
+        with patch("litellm.completion", side_effect=_capture(seen)):
+            offering(state, dest=None)
+        prompt = _prompt_text(seen)
+        assert "RECENT-TURN-MARKER" in prompt
+        assert ("OLD-TURN-MARKER" in prompt) is expect_old
+
+
+def test_domain_values_limit_caps_listed_issue_values():
+    os_ = make_os([make_issue(list(range(20)), "price")])
+    u1 = LUFun(
+        values={"price": dict.fromkeys(range(20), 1.0)},
+        weights={"price": 1.0},
+        outcome_space=os_,
+        reserved_value=0.0,
+    )
+    offering = LLMOffering(use_ufun_tools=False, domain_values_limit=3)
+    make_pablove(acceptance=AcceptTop(0), offering=offering, ufun=u1)
+    seen: dict = {}
+    with patch("litellm.completion", side_effect=_capture(seen)):
+        offering(SAOMechanism(outcome_space=os_, n_steps=4).state, dest=None)
+    prompt = _prompt_text(seen)
+    assert "[0, 1, 2]" in prompt
+    assert "3, 4" not in prompt
+
+
+def test_history_offers_limits_the_ufun_models_own_memory(domain):
+    os_, u1, _ = domain
+    model = LLMUFunModel(history_offers=2)
+    make_pablove(
+        acceptance=AcceptTop(0),
+        offering=TimeBasedOfferingPolicy(),
+        model=model,
+        ufun=u1,
+    )
+    model._seen = [(100, 1), (150, 2), (175, 1), (190, 2), (200, 1)]
+    seen: dict = {}
+    with patch("litellm.completion", side_effect=_capture(seen)):
+        model._estimate()
+    prompt = _prompt_text(seen)
+    assert "(190, 2)" in prompt and "(200, 1)" in prompt
+    assert "(100, 1)" not in prompt and "(175, 1)" not in prompt

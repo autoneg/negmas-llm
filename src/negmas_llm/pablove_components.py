@@ -109,6 +109,15 @@ class LLMComponent:
             tool-calling reliably. Requires ``self.negotiator.ufun`` to be set
             to have any effect.
         llm_kwargs: Extra keyword arguments for ``litellm.completion``.
+        text_limit: Max characters of a quoted partner utterance (current-turn
+            or from history) before it is truncated with an ellipsis. Bounds
+            prompt growth from long or adversarial messages.
+        history_turns: How many past turns :func:`_history_lines` includes
+            (subclasses that render turn history only).
+        history_offers: How many past partner offers a component keeps in its
+            own running memory (e.g. `LLMUFunModel`'s belief update).
+        domain_values_limit: Max allowed values listed per issue when
+            describing the domain (subclasses that describe the domain only).
     """
 
     provider: str | None = field(default=None, kw_only=True)
@@ -124,6 +133,10 @@ class LLMComponent:
     verbose: bool = field(default=False, kw_only=True)
     use_ufun_tools: bool = field(default=True, kw_only=True)
     llm_kwargs: dict[str, Any] = field(factory=dict, kw_only=True)
+    text_limit: int = field(default=120, kw_only=True)
+    history_turns: int = field(default=6, kw_only=True)
+    history_offers: int = field(default=8, kw_only=True)
+    domain_values_limit: int = field(default=12, kw_only=True)
     token_usage: TokenUsage = field(factory=TokenUsage, init=False)
     _resolved: Any = field(default=None, init=False)
 
@@ -333,11 +346,12 @@ class LLMLanguage(LLMComponent, Language):
         from negmas.sao import ResponseType
 
         parts = [f"Round {ctx.step} (time {ctx.relative_time:.0%})."]
+        text = _partner_text(ctx)
+        if text:
+            parts.append(f'They said: "{_truncate(text, self.text_limit)}"')
         perception = ctx.perception_this_step()
-        if perception is not None and perception.text:
-            parts.append(f'They said: "{perception.text}"')
-            if perception.acts:
-                parts.append(f"Their move was: {', '.join(perception.acts)}.")
+        if perception is not None and perception.acts:
+            parts.append(f"Their move was: {', '.join(perception.acts)}.")
         if ctx.entry == "propose":
             parts.append(f"You are proposing {_outcome_of(ctx.bid)}.")
         elif ctx.acceptance == ResponseType.ACCEPT_OFFER:
@@ -541,7 +555,7 @@ def outcome_space_of(negotiator: Any):
     return os_
 
 
-def _describe_domain(negotiator: Any) -> str:
+def _describe_domain(negotiator: Any, max_values: int = 12) -> str:
     """Issue names and allowed values, for a prompt."""
     os_ = outcome_space_of(negotiator)
     issues = list(getattr(os_, "issues", None) or [])
@@ -550,29 +564,65 @@ def _describe_domain(negotiator: Any) -> str:
     lines = []
     for issue in issues:
         try:
-            values = list(issue.all)[:12]
+            values = list(issue.all)[:max_values]
         except Exception:  # noqa: BLE001
             values = [f"{issue.min_value}..{issue.max_value}"]
         lines.append(f"  - {issue.name}: {values}")
     return "Issues, in order, with allowed values:\n" + "\n".join(lines)
 
 
-def _history_lines(negotiator: Any, ctx: TurnContext, k: int = 6) -> str:
-    """Recent offers with our utilities, for a prompt."""
+def _truncate(text: str, limit: int) -> str:
+    """Cap a quoted utterance so history doesn't grow the prompt unboundedly."""
+    text = text.strip()
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _partner_text(ctx: TurnContext) -> str | None:
+    """The opponent's words for the current turn, wherever they came from.
+
+    Prefers the `Perception` component's reading (when one is configured);
+    falls back to the raw ``ctx.their_data["text"]`` so an agent with no
+    `Perception` slot still sees what the partner said, not just what they
+    offered.
+    """
+    perception = ctx.perception_this_step()
+    if perception is not None and perception.text:
+        return perception.text
+    data = ctx.their_data
+    if isinstance(data, dict) and data.get("text"):
+        return str(data["text"])
+    return None
+
+
+def _said_text(turn: TurnContext) -> str | None:
+    """The opponent's words for a *past* turn, for use in history rows."""
+    if turn.perception is not None and turn.perception.text:
+        return turn.perception.text
+    data = turn.their_data
+    if isinstance(data, dict) and data.get("text"):
+        return str(data["text"])
+    return None
+
+
+def _history_lines(
+    negotiator: Any, ctx: TurnContext, k: int = 6, text_limit: int = 120
+) -> str:
+    """Recent offers -- with what was said and our utilities -- for a prompt."""
     ufun = getattr(negotiator, "ufun", None)
     rows = []
     for prev in ctx.history[-k:]:
         if prev.entry == "propose" and prev.bid is not None:
-            who, outcome = "you", _outcome_of(prev.bid)
+            who, outcome, said = "you", _outcome_of(prev.bid), None
         elif prev.their_offer is not None:
-            who, outcome = "them", prev.their_offer
+            who, outcome, said = "them", prev.their_offer, _said_text(prev)
         else:
             continue
         try:
             u = f" (worth {float(ufun(outcome)):.2f} to you)" if ufun else ""
         except Exception:  # noqa: BLE001
             u = ""
-        rows.append(f"  step {prev.step}: {who} offered {outcome}{u}")
+        quote = f' — they said: "{_truncate(said, text_limit)}"' if said else ""
+        rows.append(f"  step {prev.step}: {who} offered {outcome}{u}{quote}")
     return "Recent offers:\n" + "\n".join(rows) if rows else ""
 
 
@@ -673,12 +723,24 @@ class LLMOffering(LLMComponent, OfferingPolicy):
         limit = word_limit_instruction(self.word_budget)
         system = f"{self.system_prompt}\n{limit}" if limit else self.system_prompt
         parts = [
-            _describe_domain(self.negotiator),
+            _describe_domain(self.negotiator, max_values=self.domain_values_limit),
             f"Round {getattr(state, 'step', 0)}, time "
             f"{float(getattr(state, 'relative_time', 0.0) or 0.0):.0%}.",
         ]
         if ctx is not None:
-            parts.append(_history_lines(self.negotiator, ctx))
+            parts.append(
+                _history_lines(
+                    self.negotiator,
+                    ctx,
+                    k=self.history_turns,
+                    text_limit=self.text_limit,
+                )
+            )
+            text = _partner_text(ctx)
+            if text:
+                parts.append(
+                    f'They most recently said: "{_truncate(text, self.text_limit)}"'
+                )
             perception = ctx.perception_this_step()
             if perception is not None and perception.acts:
                 parts.append(f"Their last move was: {', '.join(perception.acts)}.")
@@ -754,7 +816,17 @@ class LLMAcceptance(LLMComponent, AcceptancePolicy):
             ),
         ]
         if ctx is not None:
-            parts.append(_history_lines(self.negotiator, ctx))
+            parts.append(
+                _history_lines(
+                    self.negotiator,
+                    ctx,
+                    k=self.history_turns,
+                    text_limit=self.text_limit,
+                )
+            )
+            text = _partner_text(ctx)
+            if text:
+                parts.append(f'They said: "{_truncate(text, self.text_limit)}"')
         decision = str(
             self.parse_json(
                 self.call_llm(system, "\n".join(p for p in parts if p))
@@ -838,15 +910,17 @@ class LLMUFunModel(LLMComponent, UFunModel):
     def _estimate(self) -> None:
         """One LLM call to refresh the belief; failures leave it unchanged."""
         ctx = getattr(self.negotiator, "turn", None)
-        parts = [_describe_domain(self.negotiator)]
+        parts = [_describe_domain(self.negotiator, max_values=self.domain_values_limit)]
         parts.append(
             "Their offers so far, most recent last:\n"
-            + "\n".join(f"  {o}" for o in self._seen[-8:])
+            + "\n".join(f"  {o}" for o in self._seen[-self.history_offers :])
         )
         if ctx is not None:
-            perception = ctx.perception_this_step()
-            if perception is not None and perception.text:
-                parts.append(f'They most recently said: "{perception.text}"')
+            text = _partner_text(ctx)
+            if text:
+                parts.append(
+                    f'They most recently said: "{_truncate(text, self.text_limit)}"'
+                )
         data = self.parse_json(
             self.call_llm(self.system_prompt, "\n".join(p for p in parts if p))
         )
@@ -988,6 +1062,7 @@ class LLMEnding(LLMComponent, Ending):
             except Exception:  # noqa: BLE001
                 utility = reserved = None
         self.stats["asked"] += 1
+        text = _partner_text(ctx)
         data = self.parse_json(
             self.call_llm(
                 self.system_prompt,
@@ -998,7 +1073,14 @@ class LLMEnding(LLMComponent, Ending):
                     if utility is not None and reserved is not None
                     else ""
                 )
-                + f"\n{_history_lines(self.negotiator, ctx)}",
+                + (f'\nThey said: "{_truncate(text, self.text_limit)}"' if text else "")
+                + "\n"
+                + _history_lines(
+                    self.negotiator,
+                    ctx,
+                    k=self.history_turns,
+                    text_limit=self.text_limit,
+                ),
             )
         )
         if not data.get("end"):
