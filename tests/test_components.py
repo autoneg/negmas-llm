@@ -506,6 +506,6 @@ class TestComponentMixinMethods:
         )
 
         result = policy.format_state(state, (50, 5), None)
-        assert "Step" in result
-        assert "5" in result
-        assert "50.00%" in result
+        assert "Round 5" in result
+        assert "50%" in result
+        assert "Relative time" in result

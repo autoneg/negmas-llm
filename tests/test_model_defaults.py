@@ -21,6 +21,7 @@ from negmas_llm.common import (
     resolve_max_tokens,
     resolve_max_words,
     resolve_temperature,
+    time_status,
     word_limit_instruction,
 )
 
@@ -66,6 +67,22 @@ def test_word_budget_is_what_bounds_the_answer():
     assert "25 words" in word_limit_instruction(25)
     assert word_limit_instruction(None) == ""
     assert word_limit_instruction(0) == ""
+
+
+def test_time_status_reports_unlimited_when_limits_are_none():
+    text = time_status(3, 0.42)
+    assert "Round 3" in text
+    assert "42%" in text
+    assert "no step limit" in text
+    assert "no time limit" in text
+
+
+def test_time_status_reports_the_actual_limits():
+    text = time_status(3, 0.5, n_steps=10, time_limit=120.0)
+    assert "at most 10 steps" in text
+    assert "120s" in text
+    assert "50%" in text
+    assert "deadline" in text
 
 
 def test_max_words_env_override(monkeypatch):

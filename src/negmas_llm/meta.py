@@ -28,6 +28,7 @@ from negmas_llm.common import (
     apply_temperature,
     litellm_model_string,
     resolve_max_words,
+    time_status,
     word_limit_instruction,
 )
 from negmas_llm.config import (
@@ -485,6 +486,20 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
             }
             """)
 
+    def _time_status(self, state: SAOState) -> str:
+        """:func:`time_status` for ``state``, with limits from ``self.nmi``.
+
+        ``self.nmi`` is ``None`` outside a live negotiation, in which case the
+        limits are reported as unlimited rather than guessed at.
+        """
+        nmi = self.nmi
+        return time_status(
+            state.step,
+            state.relative_time,
+            getattr(nmi, "n_steps", None) if nmi is not None else None,
+            getattr(nmi, "time_limit", None) if nmi is not None else None,
+        )
+
     def _build_user_message(
         self,
         state: SAOState,
@@ -504,7 +519,7 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
             The user message string.
         """
         parts = [
-            f"This is round {state.step} (relative time is {state.relative_time:.1%}).",
+            self._time_status(state),
             "",
         ]
 
@@ -884,7 +899,7 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
             The user message string.
         """
         parts = [
-            f"This is round {state.step} (relative time is {state.relative_time:.1%}).",
+            self._time_status(state),
             "",
         ]
         if for_response and state.current_offer is not None:

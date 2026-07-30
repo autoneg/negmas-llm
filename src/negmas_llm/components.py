@@ -27,6 +27,7 @@ from negmas_llm.common import (
     apply_max_tokens,
     apply_temperature,
     litellm_model_string,
+    time_status,
 )
 from negmas_llm.config import (
     DEFAULT_PROVIDER,
@@ -356,9 +357,13 @@ class LLMComponentMixin(ABC):
         negotiator: Negotiator | None,
     ) -> str:
         """Format the negotiation state for the LLM."""
+        nmi = negotiator.nmi if negotiator is not None else None
+        n_steps = getattr(nmi, "n_steps", None)
+        time_limit = getattr(nmi, "time_limit", None)
         parts = ["Current state follows.", ""]
-        parts.append(f"    Step is {state.step}.")
-        parts.append(f"    Relative time is {state.relative_time:.2%}.")
+        parts.append(
+            f"    {time_status(state.step, state.relative_time, n_steps, time_limit)}"
+        )
 
         if offer is not None:
             offer_str = self._format_outcome(offer, negotiator)
@@ -892,11 +897,13 @@ class LLMNegotiationSupporter(GBComponent, LLMComponentMixin):
         if self.negotiator is not None and self.negotiator.ufun is not None:
             utility = self.negotiator.ufun(offer)
 
+        nmi = self.negotiator.nmi if self.negotiator is not None else None
+        n_steps = getattr(nmi, "n_steps", None)
+        time_limit = getattr(nmi, "time_limit", None)
         user_message = (
             "Generate a brief, persuasive message for this offer.\n\n"
             f"The offer is {offer_str}.\n"
-            f"The round is {state.step}.\n"
-            f"Relative time is {state.relative_time:.1%}.\n"
+            f"{time_status(state.step, state.relative_time, n_steps, time_limit)}\n"
         )
         if utility is not None:
             user_message += f"Your utility for this offer is {utility:.3f}.\n"
@@ -942,11 +949,14 @@ class LLMNegotiationSupporter(GBComponent, LLMComponentMixin):
 
         offer_str = self._format_outcome(offer, self.negotiator) if offer else "None"
 
+        nmi = self.negotiator.nmi if self.negotiator is not None else None
+        n_steps = getattr(nmi, "n_steps", None)
+        time_limit = getattr(nmi, "time_limit", None)
         user_message = (
             "Generate a brief message for this response.\n\n"
             f"The response is {response_name}.\n"
             f"The offer is {offer_str}.\n"
-            f"The round is {state.step}.\n"
+            f"{time_status(state.step, state.relative_time, n_steps, time_limit)}\n"
         )
 
         if response == ResponseType.ACCEPT_OFFER:

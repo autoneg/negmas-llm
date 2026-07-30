@@ -365,6 +365,22 @@ def test_turn_context_history_accumulates(domain):
     assert len(neg.turns[-1].history) == len(neg.turns) - 1
 
 
+def test_turn_context_carries_mechanism_limits(domain):
+    """n_steps/time_limit come from the NMI, not the (limit-less) GBState."""
+    os_, u1, u2 = domain
+    neg = make_pablove(
+        acceptance=AcceptTop(0),
+        offering=TimeBasedOfferingPolicy(),
+        language=TemplateLanguage(),
+        ufun=u1,
+    )
+    _run(neg, os_, u2, n_steps=7)
+    assert len(neg.turns) >= 1
+    for t in neg.turns:
+        assert t.n_steps == 7
+        assert t.time_limit == float("inf"), "negmas reports unset time_limit as inf"
+
+
 def test_their_offer_and_bid_are_separate_fields(domain):
     """The two must never be conflated — that is a known bug class."""
     os_, u1, u2 = domain

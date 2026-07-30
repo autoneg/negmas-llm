@@ -251,6 +251,44 @@ def resolve_max_words(value: int | None) -> int | None:
     return value if value is not None else default_max_words()
 
 
+def time_status(
+    step: int,
+    relative_time: float,
+    n_steps: int | None = None,
+    time_limit: float | None = None,
+) -> str:
+    """One line stating progress *and* what it means, for any per-turn prompt.
+
+    ``relative_time`` alone is meaningless to a model unless it is also told
+    that 0.0 is the start, 1.0 is the deadline, and the negotiation ends
+    (typically without agreement) once it is reached. A missing (``None``) or
+    infinite ``n_steps``/``time_limit`` means "unlimited" — negmas' own NMI
+    reports an unset ``time_limit`` as ``float("inf")`` rather than ``None`` —
+    and is reported as such rather than omitted, so the model does not mistake
+    missing data for a hidden limit.
+
+    Args:
+        step: Current mechanism step (0-indexed).
+        relative_time: Progress toward the deadline, in ``[0, 1]``.
+        n_steps: Maximum number of steps, or ``None``/``inf`` if unlimited.
+        time_limit: Maximum wall-clock seconds, or ``None``/``inf`` if unlimited.
+
+    Returns:
+        A single-line status string.
+    """
+    has_n_steps = n_steps is not None and n_steps != float("inf")
+    has_time_limit = time_limit is not None and time_limit != float("inf")
+    limit_bits = [
+        f"at most {n_steps} steps" if has_n_steps else "no step limit",
+        f"a time limit of {time_limit:.0f}s" if has_time_limit else "no time limit",
+    ]
+    return (
+        f"Round {step} ({', '.join(limit_bits)}). Relative time is "
+        f"{relative_time:.0%} (0% = start, 100% = deadline, when the "
+        "negotiation ends without agreement if no deal was reached)."
+    )
+
+
 def default_temperature(provider: str, model: str) -> float | None:
     """Model-appropriate sampling temperature, or None to omit the parameter.
 

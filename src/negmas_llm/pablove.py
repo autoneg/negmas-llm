@@ -173,6 +173,14 @@ class TurnContext:
     length it had at creation time, so building the tuple is deferred to
     whoever actually reads ``history`` (and ``last``/``perception_this_step``
     below walk the list directly instead of going through ``history`` at all).
+
+    ``step`` and ``relative_time`` are read live from ``state`` rather than
+    copied, so they always reflect the state this turn was opened with.
+    ``n_steps``/``time_limit`` come from the NMI instead, since ``GBState``
+    itself carries no mechanism limits; both are captured once, in
+    ``PABLOveNegotiator._open_turn``. Any component can reach all four here
+    without going through ``self.negotiator.nmi`` itself, which is ``None``
+    outside a live negotiation.
     """
 
     entry: Literal["propose", "respond"]
@@ -181,6 +189,10 @@ class TurnContext:
     dest: str | None = None
     their_offer: Outcome | None = None
     their_data: dict[str, Any] | None = None
+    #: Mechanism limits, from the NMI at the time the turn opened. ``None``
+    #: means unlimited, not "unknown" — the NMI reports it that way too.
+    n_steps: int | None = None
+    time_limit: float | None = None
 
     perception: PerceptionResult | None = None
     beliefs: Any = None
@@ -474,6 +486,7 @@ class PABLOveNegotiator(MAPNegotiator):
         their_offer: Outcome | None = None,
         their_data: dict[str, Any] | None = None,
     ) -> TurnContext:
+        nmi = getattr(self, "nmi", None)
         ctx = TurnContext(
             entry=entry,
             state=state,
@@ -481,6 +494,8 @@ class PABLOveNegotiator(MAPNegotiator):
             dest=dest,
             their_offer=their_offer,
             their_data=their_data,
+            n_steps=getattr(nmi, "n_steps", None),
+            time_limit=getattr(nmi, "time_limit", None),
         )
         # Shared reference, not a copy: see TurnContext.history.
         ctx._history_all = self._turns

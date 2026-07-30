@@ -37,6 +37,7 @@ from negmas_llm.common import (
     apply_temperature,
     litellm_model_string,
     resolve_max_words,
+    time_status,
     word_limit_instruction,
 )
 from negmas_llm.config import DEFAULT_PROVIDER, resolve_llm_config
@@ -345,7 +346,7 @@ class LLMLanguage(LLMComponent, Language):
     def _user(self, ctx: TurnContext) -> str:
         from negmas.sao import ResponseType
 
-        parts = [f"Round {ctx.step} (time {ctx.relative_time:.0%})."]
+        parts = [time_status(ctx.step, ctx.relative_time, ctx.n_steps, ctx.time_limit)]
         text = _partner_text(ctx)
         if text:
             parts.append(f'They said: "{_truncate(text, self.text_limit)}"')
@@ -442,6 +443,7 @@ class LLMPerception(LLMComponent, Perception):
             return PerceptionResult(source="none")
         raw = self.call_llm(
             self.system_prompt,
+            f"{_time_status(ctx)}\n"
             f'Their message: "{text}"\nTheir offer: {ctx.their_offer}',
         )
         data = self.parse_json(raw)
@@ -575,6 +577,20 @@ def _truncate(text: str, limit: int) -> str:
     """Cap a quoted utterance so history doesn't grow the prompt unboundedly."""
     text = text.strip()
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _time_status(ctx: TurnContext | None, state: Any = None) -> str:
+    """:func:`time_status`, preferring ``ctx`` (has the NMI limits) over ``state``.
+
+    ``state`` is the fallback for call sites invoked outside a PABLO-ve turn
+    (e.g. directly against a bare `GBState`), which carries no mechanism limits.
+    """
+    if ctx is not None:
+        return time_status(ctx.step, ctx.relative_time, ctx.n_steps, ctx.time_limit)
+    return time_status(
+        int(getattr(state, "step", 0) or 0),
+        float(getattr(state, "relative_time", 0.0) or 0.0),
+    )
 
 
 def _partner_text(ctx: TurnContext) -> str | None:
@@ -724,8 +740,7 @@ class LLMOffering(LLMComponent, OfferingPolicy):
         system = f"{self.system_prompt}\n{limit}" if limit else self.system_prompt
         parts = [
             _describe_domain(self.negotiator, max_values=self.domain_values_limit),
-            f"Round {getattr(state, 'step', 0)}, time "
-            f"{float(getattr(state, 'relative_time', 0.0) or 0.0):.0%}.",
+            _time_status(ctx, state),
         ]
         if ctx is not None:
             parts.append(
@@ -806,8 +821,7 @@ class LLMAcceptance(LLMComponent, AcceptancePolicy):
         limit = word_limit_instruction(self.word_budget)
         system = f"{self.system_prompt}\n{limit}" if limit else self.system_prompt
         parts = [
-            f"Round {getattr(state, 'step', 0)}, time "
-            f"{float(getattr(state, 'relative_time', 0.0) or 0.0):.0%}.",
+            _time_status(ctx, state),
             f"Their offer: {offer}"
             + (
                 f" (worth {utility:.2f} to you; your reserved value is {reserved:.2f})"
@@ -910,7 +924,10 @@ class LLMUFunModel(LLMComponent, UFunModel):
     def _estimate(self) -> None:
         """One LLM call to refresh the belief; failures leave it unchanged."""
         ctx = getattr(self.negotiator, "turn", None)
-        parts = [_describe_domain(self.negotiator, max_values=self.domain_values_limit)]
+        parts = [
+            _describe_domain(self.negotiator, max_values=self.domain_values_limit),
+            _time_status(ctx),
+        ]
         parts.append(
             "Their offers so far, most recent last:\n"
             + "\n".join(f"  {o}" for o in self._seen[-self.history_offers :])
@@ -1001,6 +1018,7 @@ class LLMValidation(LLMComponent, Validation):
         data = self.parse_json(
             self.call_llm(
                 self.system_prompt,
+                f"{_time_status(ctx)}\n"
                 f'The action being taken: {action}.\nThe message: "{utterance.text}"',
             )
         )
@@ -1066,7 +1084,7 @@ class LLMEnding(LLMComponent, Ending):
         data = self.parse_json(
             self.call_llm(
                 self.system_prompt,
-                f"Time is {ctx.relative_time:.0%}.\n"
+                f"{_time_status(ctx)}\n"
                 f"Their offer: {ctx.their_offer}"
                 + (
                     f" (worth {utility:.2f}; your reserved value is {reserved:.2f})"
