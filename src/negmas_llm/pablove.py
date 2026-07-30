@@ -448,6 +448,20 @@ class PABLOveNegotiator(MAPNegotiator):
             (self._perception, self._language, self._validation, self._ending)
         )
 
+    @property
+    def opponent_model(self) -> Model | None:
+        """The ``O`` (opponent model) component, if any.
+
+        Some offering/acceptance policies from negmas's own catalogue (e.g.
+        ``NiceTitForTatOfferingPolicy``) read ``self.negotiator.opponent_model``
+        directly rather than taking it as a constructor argument, matching the
+        property `NiceTitForTatNegotiator` itself exposes. `PABLOveNegotiator`
+        only ever registers at most one model (the ``model=`` constructor
+        argument, stored in ``self._models``), so this is exactly that model,
+        under the name such components expect.
+        """
+        return self._models[0] if self._models else None
+
     def _open_turn(
         self,
         entry: Literal["propose", "respond"],
