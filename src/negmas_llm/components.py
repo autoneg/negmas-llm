@@ -34,7 +34,7 @@ from negmas_llm.config import (
     effective_llm_config,
     resolve_llm_config,
 )
-from negmas_llm.tags import process_prompt
+from negmas_llm.tags import describe_reserved_value, process_prompt
 
 if TYPE_CHECKING:
     from litellm.types.utils import Choices
@@ -337,17 +337,23 @@ class LLMComponentMixin(ABC):
                 "Higher utility is better for you.",
                 "",
                 f"Your utility function is {ufun_str}.",
-                f"Your reserved value (utility of no agreement) is {reserved}.",
+                describe_reserved_value(
+                    float(reserved) if reserved is not None else None, own=True
+                ),
                 "",
                 "Full specification follows.",
                 f"```json\n{json.dumps(ufun_dict, indent=2, default=str)}\n```",
             ]
             return "\n".join(parts)
         except Exception:
+            reserved = negotiator.reserved_value
             return (
                 "Your Utility Function follows.\n\n"
                 f"Your utility function is {negotiator.ufun}.\n"
-                f"Your reserved value is {negotiator.reserved_value}.\n"
+                + describe_reserved_value(
+                    float(reserved) if reserved is not None else None, own=True
+                )
+                + "\n"
             )
 
     def format_state(

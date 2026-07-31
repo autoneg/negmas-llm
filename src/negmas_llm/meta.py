@@ -34,7 +34,7 @@ from negmas_llm.config import (
     effective_llm_config,
     resolve_llm_config,
 )
-from negmas_llm.tags import process_prompt
+from negmas_llm.tags import describe_reserved_value, process_prompt
 from negmas_llm.token_usage import TokenUsage
 from negmas_llm.ufun_tools import run_llm_call
 
@@ -516,6 +516,16 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
             "",
         ]
 
+        # Even on the pure text-generation path -- where a base strategy chose
+        # the action and this LLM only narrates it -- state the walk-away
+        # payoff, so the message it writes is grounded in the same economics
+        # the strategy used. The system prompt's secrecy rules still apply: the
+        # number informs the wording, it is not to be disclosed.
+        reserved_text = self._reserved_value_text()
+        if reserved_text:
+            parts.append(reserved_text)
+            parts.append("")
+
         if received_text:
             parts.append(f'The other party said: "{received_text}"')
             parts.append("")
@@ -811,6 +821,34 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
                 pass
         return str(outcome)
 
+    def _utility_of(self, outcome: Outcome | None) -> float | None:
+        """This negotiator's own utility for ``outcome``, if computable."""
+        if outcome is None or self.ufun is None:
+            return None
+        try:
+            return float(self.ufun(outcome))
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _reserved_value_text(self) -> str:
+        """The reserved value, described in full, or ``""`` if there is none.
+
+        A meta-negotiator delegates offer generation to a base strategy that
+        already enforces rationality internally, but the LLM decision layer on
+        top of it can still override that strategy -- accepting an offer the
+        base would have rejected. It therefore needs the walk-away payoff in
+        its own prompt, which no other code path supplies for this class.
+        """
+        if self.ufun is None:
+            return ""
+        reserved = getattr(self, "reserved_value", None)
+        if reserved is None:
+            return ""
+        try:
+            return describe_reserved_value(float(reserved), own=True)
+        except (TypeError, ValueError):
+            return ""
+
     def _build_decision_system_prompt(self, for_response: bool) -> str:
         """Build the system prompt for the override/synthesis path.
 
@@ -830,6 +868,12 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
 
                 You may follow a recommendation or choose differently.
 
+                Your reserved value is the utility you receive if this
+                negotiation ends with no agreement. Never accept an offer worth
+                at or below it: ending with no deal pays you your reserved
+                value, so such an agreement would leave you worse off. If no
+                acceptable deal is reachable, ending is the correct choice.
+
                 Respond with ONLY this JSON:
                 {
                     "response": "accept" | "reject" | "end",
@@ -843,6 +887,11 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
 
             You may follow a recommendation or choose a different valid outcome
             from the outcome space.
+
+            Your reserved value is the utility you receive if this negotiation
+            ends with no agreement. Never propose an outcome worth at or below
+            it: you would be better off with no deal than having that one
+            accepted.
 
             Respond with ONLY this JSON:
             {
@@ -878,6 +927,17 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
             parts.append(
                 f"The current offer on the table is {self._format_outcome(state.current_offer)}."
             )
+            utility = self._utility_of(state.current_offer)
+            if utility is not None:
+                parts.append(f"Your utility for this offer is {utility:.4f}.")
+            parts.append("")
+        # The reserved value is stated on BOTH paths. Unlike LLMNegotiator, a
+        # meta-negotiator has no preferences prompt in which it would otherwise
+        # have learned its own walk-away payoff, so this decision message is the
+        # only place it can arrive.
+        reserved_text = self._reserved_value_text()
+        if reserved_text:
+            parts.append(reserved_text)
             parts.append("")
         if received_text:
             parts.append(f'The other party said: "{received_text}"')

@@ -39,6 +39,7 @@ from negmas_llm.config import (
     resolve_llm_config,
 )
 from negmas_llm.summarize import maybe_summarize
+from negmas_llm.tags import describe_reserved_value
 from negmas_llm.tags import process_prompt as _process_prompt
 from negmas_llm.token_usage import TokenUsage
 from negmas_llm.ufun_tools import run_llm_call
@@ -123,10 +124,14 @@ _SAOSTATE_DOCSTRING = _dedent("""
 
 _UFUN_DOCSTRING = _dedent("""
     Your utility = sum of contributions for each issue value.
-    reserved_value is your minimum acceptable utility:
-        never accept offers with utility <= reserved_value
-        never propose offers with utility <= reserved_value
-        walk away if no acceptable agreement is possible
+    reserved_value is the utility you receive if this negotiation ends with
+    NO agreement -- your payoff for walking away or for running out of time.
+    It is your break-even point, not an arbitrary limit:
+        an agreement worth <= reserved_value pays you less than no deal
+        so never accept offers with utility <= reserved_value
+        and never propose offers with utility <= reserved_value
+        walk away if no agreement above reserved_value is reachable --
+            walking away still pays you reserved_value, a bad deal pays less
     """)
 
 # =============================================================================
@@ -137,11 +142,16 @@ DEFAULT_SYSTEM_PROMPT = _dedent("""
     You are an expert negotiator. Maximize your utility while reaching
     agreements when possible.
 
+    Your reserved_value is the utility you get if there is NO agreement, so a
+    deal below it is worse for you than walking away.
+
     Strategy:
         1. Open strong: first offer = your highest-utility outcome.
         2. Concede slowly; pace yourself with relative_time and opponent moves.
-        3. Never accept or propose offers with utility <= reserved_value.
-        4. As deadline approaches you may concede more, but never below reserved_value.
+        3. Never accept or propose offers with utility <= reserved_value --
+           no agreement pays you reserved_value, such a deal pays less.
+        4. As deadline approaches you may concede more, but never below
+           reserved_value; running out of time still pays you reserved_value.
         5. Do not reveal your reserved_value or utility details.
 
     Respond strictly in the requested JSON format.
@@ -157,10 +167,9 @@ DEFAULT_PREFERENCES_PROMPT = _dedent("""
     The outcome space follows.
     {{{{outcome-space:json}}}}
 
-    Your utility function follows.
+    Your utility function and your reserved value follow.
     {ufun_docstring}
     {{{{utility-function:text}}}}
-    Your reserved value is {{{{reserved-value}}}}.
 
     {{{{opponent-utility-function:text}}}}
     {{{{annotation:json}}}}
@@ -177,10 +186,9 @@ DEFAULT_PREFERENCES_CHANGED_PROMPT = _dedent("""
     The outcome space follows.
     {{{{outcome-space:json}}}}
 
-    Your utility function follows.
+    Your utility function and your reserved value follow.
     {ufun_docstring}
     {{{{utility-function:text}}}}
-    Your reserved value is {{{{reserved-value}}}}.
 
     {{{{opponent-utility-function:text}}}}
     {{{{annotation:json}}}}
@@ -198,9 +206,12 @@ DEFAULT_NEGOTIATION_START_PROMPT = _dedent("""
     Follow these rules.
         1. Your first offer is your best (highest-utility) outcome.
         2. Concede slowly based on relative_time and the opponent's pace.
-        3. Never accept offers with utility at or below your reserved value.
+        3. Never accept offers with utility at or below your reserved value --
+           your reserved value is what you get if there is no agreement, so
+           such a deal leaves you worse off than not agreeing at all.
         4. Never propose offers with utility at or below your reserved value.
-        5. END if no acceptable deal exists; that beats a bad agreement.
+        5. END if no acceptable deal exists; ending pays you your reserved
+           value, which beats a bad agreement.
 
     Respond with JSON only, in this shape.
     ```json
@@ -634,7 +645,9 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         - {{opponent-utility-function}}: Opponent's utility function (if known)
         - {{nmi}}: Negotiation mechanism interface information
         - {{current-state}}: Current negotiation state
-        - {{reserved-value}}: Your reserved value (walk-away point)
+        - {{reserved-value}}: Your reserved value, rendered as a sentence
+          explaining that it is the utility you get with no agreement
+          (use {{reserved-value:json}} for the bare number)
         - {{opponent-reserved-value}}: Opponent's reserved value (if known)
         - {{my-last-offer}}, {{my-first-offer}}: Your offers
         - {{opponent-last-offer}}, {{opponent-first-offer}}: Opponent's offers
@@ -976,8 +989,13 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
                         f"Your utility for this offer is {utility:.4f}"
                     )
                     if reserved is not None:
+                        # Compact per-round reminder: the full explanation is in
+                        # the preferences prompt, but the gloss is repeated here
+                        # because this line is what the LLM actually compares
+                        # against when deciding to accept.
                         offer_info_parts.append(
-                            f" (your reserved value is {reserved:.4f})"
+                            f" (your reserved value -- what you get if there is"
+                            f" no agreement -- is {reserved:.4f})"
                         )
                     offer_info_parts.append(".\n")
                 except (TypeError, ValueError):
@@ -1229,19 +1247,23 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
                 "Higher utility is better for you.",
                 "",
                 f"Your utility function is {ufun_str}.",
-                f"Your reserved value (utility of no agreement) is {reserved}.",
+                describe_reserved_value(
+                    float(reserved) if reserved is not None else None, own=True
+                ),
                 "",
                 "Full specification follows.",
                 f"```json\n{json.dumps(ufun_dict, indent=2, default=str)}\n```",
             ]
             return "\n".join(parts)
         except Exception:
+            reserved = self.reserved_value
             return _dedent(f"""
                 Your Utility Function follows.
 
                 Your utility function is {self.ufun}.
-                Your reserved value is {self.reserved_value}.
-                """)
+                """) + describe_reserved_value(
+                float(reserved) if reserved is not None else None, own=True
+            )
 
     def format_partner_ufun(self, state: SAOState) -> str:
         """Format the partner's utility function for the LLM."""
@@ -1267,7 +1289,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
                 f"Partner's utility function is {ufun_str}.",
             ]
             if reserved is not None:
-                parts.append(f"Partner's reserved value is {reserved}.")
+                parts.append(describe_reserved_value(float(reserved), own=False))
             parts += [
                 "",
                 "Full specification follows.",

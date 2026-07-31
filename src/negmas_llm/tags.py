@@ -37,6 +37,7 @@ __all__ = [
     "TagFormat",
     "TagContext",
     "TagHandler",
+    "describe_reserved_value",
     "process_prompt",
     "register_tag_handler",
     "get_tag_handler",
@@ -293,7 +294,8 @@ Returns your reserved value (walk-away point).
 **Parameters:** None
 
 **Formats:**
-- `{{reserved-value}}` or `{{reserved-value:text}}` - Numeric value
+- `{{reserved-value}}` or `{{reserved-value:text}}` - A self-describing
+  sentence stating the value AND what it means
 - `{{reserved-value:json}}` - JSON object with reserved_value key
 
 **Description:**
@@ -301,7 +303,13 @@ The reserved value is the utility you receive if negotiation fails
 (no agreement reached). You should aim for outcomes with utility
 above this value.
 
-**Example output:** `0.35`
+The `text` form deliberately renders a full explanation rather than a bare
+number, so a prompt need not (and should not) introduce it with its own
+lead-in like "Your reserved value is {{reserved-value}}." Use `:json` when
+a bare scalar is wanted.
+
+**Example output:** `Your reserved value is 0.350. This is the utility you
+receive if this negotiation ends with NO agreement -- ...`
 """,
             "opponent-reserved-value": """\
 ### `{{opponent-reserved-value}}`
@@ -1027,12 +1035,61 @@ def _handle_outcome_space(ctx: TagContext) -> str:
             return str(outcome_space)
 
 
-def _format_linear_additive_ufun(ufun: Any, negotiator: Any) -> str:
+def describe_reserved_value(value: float | None, *, own: bool = True) -> str:
+    """One canonical, self-explanatory sentence about a reserved value.
+
+    Every prompt that mentions a reserved value routes through here, so the LLM
+    always learns what the number *means* -- the utility received when the
+    negotiation ends without an agreement -- and not merely that it is a floor
+    it must stay above. Stating the consequence ("worse for you than no deal")
+    is what makes the floor rule follow from the payoff rather than read as an
+    arbitrary constraint, which matters most when the reserved value is high
+    enough that walking away is genuinely the rational move.
+
+    Args:
+        value: The reserved value, or ``None`` when the party has none set.
+        own: Whether this describes the reading party's own reserved value.
+            When ``False`` the text is phrased about the opponent, whose
+            reserved value constrains what *they* will accept, not what the
+            reader may offer.
+
+    Returns:
+        A sentence (or two) ready to drop into a prompt.
+    """
+    if value is None:
+        return (
+            "Your reserved value is not set."
+            if own
+            else "The opponent's reserved value is unknown."
+        )
+    if own:
+        return (
+            f"Your reserved value is {value:.3f}. This is the utility you "
+            f"receive if this negotiation ends with NO agreement -- if you walk "
+            f"away, or time runs out. Any agreement worth less than {value:.3f} "
+            f"to you is therefore worse for you than no deal at all, so never "
+            f"accept or propose one. Only outcomes worth more than {value:.3f} "
+            f"to you are worth agreeing to."
+        )
+    return (
+        f"The opponent's reserved value is {value:.3f}. That is the utility "
+        f"they receive if this negotiation ends with no agreement, so they "
+        f"will not accept any outcome worth less than {value:.3f} to them."
+    )
+
+
+def _format_linear_additive_ufun(
+    ufun: Any, negotiator: Any, *, own: bool = True
+) -> str:
     """Format a LinearAdditiveUtilityFunction as human-readable text.
 
     Args:
         ufun: The utility function (expected to be LinearAdditiveUtilityFunction)
         negotiator: The negotiator (to get outcome space info)
+        own: Whether ``ufun`` belongs to the reading party. This function is
+            also used to render the OPPONENT's utility function, and the
+            reserved-value sentence must not then address the reader as if the
+            opponent's walk-away payoff were their own.
 
     Returns:
         Human-readable description of the utility function
@@ -1126,12 +1183,7 @@ def _format_linear_additive_ufun(ufun: Any, negotiator: Any) -> str:
 
     # Add reserved value prominently
     if reserved is not None:
-        lines.append(
-            f"Your reserved value (minimum acceptable utility) is {reserved:.3f}."
-        )
-        lines.append(
-            "NEVER accept or offer anything with utility at or below this value."
-        )
+        lines.append(describe_reserved_value(float(reserved), own=own))
 
     return "\n".join(lines)
 
@@ -1154,12 +1206,12 @@ def _handle_utility_function(ctx: TagContext) -> str:
         # Text format - use human-readable formatting for linear additive functions
         # Check if it's a LinearAdditiveUtilityFunction
         if hasattr(ufun, "weights") and hasattr(ufun, "values"):
-            return _format_linear_additive_ufun(ufun, ctx.negotiator)
+            return _format_linear_additive_ufun(ufun, ctx.negotiator, own=True)
         else:
             # Fallback for other utility function types
             reserved = ctx.negotiator.reserved_value
-            return (
-                f"Your utility function is {ufun}.\nYour reserved value is {reserved}."
+            return f"Your utility function is {ufun}.\n" + describe_reserved_value(
+                float(reserved) if reserved is not None else None, own=True
             )
 
 
@@ -1189,12 +1241,14 @@ def _handle_opponent_utility_function(ctx: TagContext) -> str:
     else:
         # Text format - use human-readable formatting for linear additive functions
         if hasattr(opponent_ufun, "weights") and hasattr(opponent_ufun, "values"):
-            return heading + _format_linear_additive_ufun(opponent_ufun, ctx.negotiator)
+            return heading + _format_linear_additive_ufun(
+                opponent_ufun, ctx.negotiator, own=False
+            )
         else:
             reserved = getattr(opponent_ufun, "reserved_value", None)
             text = heading + f"The opponent's utility function is {opponent_ufun}."
             if reserved is not None:
-                text += f"\nThe opponent's reserved value is {reserved}."
+                text += "\n" + describe_reserved_value(float(reserved), own=False)
             return text
 
 
@@ -1626,15 +1680,20 @@ def _handle_utility(ctx: TagContext) -> str:
 
 
 def _handle_reserved_value(ctx: TagContext) -> str:
-    """Handle the reserved-value tag."""
+    """Handle the reserved-value tag.
+
+    The ``:text`` form is a full self-describing sentence rather than a bare
+    number, so that any prompt using this tag tells the LLM what the value
+    *means* (the payoff for no agreement) and not merely what it is. Use
+    ``:json`` where a machine-readable scalar is wanted.
+    """
     reserved = ctx.negotiator.reserved_value
 
     if ctx.format == TagFormat.JSON:
         return json.dumps({"reserved_value": reserved})
-    else:
-        if reserved is None:
-            return "No reserved value set"
-        return str(reserved)
+    return describe_reserved_value(
+        float(reserved) if reserved is not None else None, own=True
+    )
 
 
 def _handle_opponent_reserved_value(ctx: TagContext) -> str:
@@ -1644,16 +1703,15 @@ def _handle_opponent_reserved_value(ctx: TagContext) -> str:
         opponent_ufun = ctx.negotiator.private_info.get("opponent_ufun")
 
     if opponent_ufun is None:
-        return "Opponent reserved value unknown"
+        return "The opponent's reserved value is unknown."
 
     reserved = getattr(opponent_ufun, "reserved_value", None)
 
     if ctx.format == TagFormat.JSON:
         return json.dumps({"opponent_reserved_value": reserved})
-    else:
-        if reserved is None:
-            return "Opponent reserved value unknown"
-        return str(reserved)
+    return describe_reserved_value(
+        float(reserved) if reserved is not None else None, own=False
+    )
 
 
 def _handle_nmi(ctx: TagContext) -> str:

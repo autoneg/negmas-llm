@@ -114,6 +114,19 @@ UFUN_TOOL_SPECS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "reserved_value",
+            "description": (
+                "Your reserved value: the utility you receive if this "
+                "negotiation ends with NO agreement. Any agreement worth less "
+                "than this leaves you worse off than walking away, so it is "
+                "your break-even point for accepting or proposing."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "evaluate_utility",
             "description": "Compute your own utility for a single outcome.",
             "parameters": {
@@ -293,6 +306,13 @@ def run_ufun_tool(
     """
     outcome_space = getattr(ufun, "outcome_space", None)
     try:
+        if name == "reserved_value":
+            reserved = getattr(ufun, "reserved_value", None)
+            return {
+                "reserved_value": float(reserved) if reserved is not None else None,
+                "meaning": "the utility you receive if there is no agreement",
+            }
+
         if name == "evaluate_utility":
             outcome = _outcome_from_repr(arguments.get("outcome"), outcome_space)
             if outcome is None:

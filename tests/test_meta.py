@@ -866,3 +866,93 @@ class TestLLMMetaNegotiatorAnnotationTags:
         system = self._system_message(mock)
         assert "camera" in system
         assert "seller" in system
+
+
+@_skip_if_unavailable
+class TestMetaNegotiatorReservedValueAwareness:
+    """The meta negotiator must be told its own walk-away payoff.
+
+    Unlike :class:`LLMNegotiator`, this class has no ``on_preferences_changed``
+    hook and therefore never renders ``DEFAULT_PREFERENCES_PROMPT``. Before the
+    reserved value was added to the decision/text prompts, a meta negotiator's
+    LLM saw the number only in rules telling it to keep the value secret --
+    never as a quantity it holds. That is invisible on scenarios where every
+    reserved value is 0.0 and wrong everywhere else.
+    """
+
+    RESERVED = 0.4237
+
+    def _all_content(self, mock) -> str:
+        """Every message body sent to the LLM across all recorded calls."""
+        chunks = []
+        for call in mock.call_args_list:
+            for msg in call.kwargs["messages"]:
+                chunks.append(str(msg.get("content", "")))
+        assert chunks, "no messages were sent to the LLM"
+        return "\n".join(chunks)
+
+    def _meta(self, outcome_space, ufun, **kwargs):
+        # Normalize to [0,1] first: LUFun.random can top out well below the
+        # reserved value under test, which would make every outcome irrational,
+        # so the base strategy proposes None and the LLM is never called --
+        # the assertions would then fail for the wrong reason.
+        ufun = ufun.normalize()
+        ufun.reserved_value = self.RESERVED
+        base = BoulwareTBNegotiator(ufun=ufun)
+        meta = LLMMetaNegotiator(
+            base_negotiator=base,
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
+            ufun=ufun,
+            **kwargs,
+        )
+        mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=10)
+        mechanism.add(meta)
+        return meta, mechanism
+
+    def test_propose_prompt_states_the_reserved_value_and_its_meaning(
+        self, simple_negotiation_setup
+    ):
+        outcome_space, ufun1, _ = simple_negotiation_setup
+        meta, mechanism = self._meta(outcome_space, ufun1)
+
+        with patch(
+            "negmas_llm.ufun_tools.litellm.completion",
+            return_value=_mock_response('{"text": "ok"}'),
+        ) as mock:
+            meta.propose(mechanism.state)
+
+        content = self._all_content(mock)
+        assert f"{self.RESERVED:.3f}" in content, (
+            "the numeric reserved value never reached the LLM"
+        )
+        assert "no agreement" in content.lower(), (
+            "the reserved value was stated without explaining that it is the "
+            "payoff for reaching no agreement"
+        )
+
+    def test_decision_path_states_the_reserved_value_and_its_meaning(
+        self, simple_negotiation_setup
+    ):
+        """The override path is where awareness matters most.
+
+        With ``enforce_base_response=False`` the LLM may overrule the base
+        strategy's accept/reject -- so it is the one component that can accept
+        a deal worse than walking away, and the only guard against that is
+        knowing the walk-away payoff.
+        """
+        outcome_space, ufun1, _ = simple_negotiation_setup
+        meta, mechanism = self._meta(outcome_space, ufun1, enforce_base_response=False)
+        state = mechanism.state
+        state.current_offer = (50, 5)
+
+        with patch(
+            "negmas_llm.ufun_tools.litellm.completion",
+            return_value=_mock_response('{"response": "reject", "text": "no"}'),
+        ) as mock:
+            meta.respond(state)
+
+        content = self._all_content(mock)
+        assert f"{self.RESERVED:.3f}" in content
+        assert "no agreement" in content.lower()

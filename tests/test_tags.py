@@ -830,3 +830,56 @@ def negotiator_with_opponent_ufun(ufun, issues):
         private_info={"opponent_ufun": opponent_ufun},
     )
     return neg
+
+
+class TestReservedValueIsSelfDescribing:
+    """The reserved value must be stated with its meaning, and attributed
+    to the right party.
+
+    ``_format_linear_additive_ufun`` renders BOTH the reader's own utility
+    function and the opponent's. It used to hard-code first-person wording, so
+    an opponent-model negotiator was told "Your reserved value ... NEVER accept
+    or offer anything at or below this value" about the OPPONENT's number --
+    silently substituting the opponent's walk-away point for its own.
+    """
+
+    def test_own_reserved_value_explains_that_it_is_the_no_agreement_payoff(
+        self, negotiator
+    ):
+        result = process_prompt("{{reserved-value}}", negotiator)
+        assert "no agreement" in result.lower()
+        assert "your reserved value" in result.lower()
+
+    def test_reserved_value_json_stays_a_bare_scalar(self, negotiator):
+        """Machine consumers must not receive the prose form."""
+        parsed = json.loads(process_prompt("{{reserved-value:json}}", negotiator))
+        assert set(parsed) == {"reserved_value"}
+        assert isinstance(parsed["reserved_value"], (int, float, type(None)))
+
+    def test_opponent_reserved_value_is_not_phrased_as_your_own(
+        self, negotiator_with_opponent_ufun
+    ):
+        result = process_prompt(
+            "{{opponent-reserved-value}}", negotiator_with_opponent_ufun
+        )
+        assert "opponent" in result.lower()
+        assert "your reserved value" not in result.lower()
+
+    def test_opponent_utility_function_does_not_claim_their_reserved_value_is_yours(
+        self, negotiator_with_opponent_ufun
+    ):
+        """The regression this class exists for."""
+        result = process_prompt(
+            "{{opponent-utility-function:text}}", negotiator_with_opponent_ufun
+        )
+        assert result, "the opponent ufun is known, so something must render"
+        lowered = result.lower()
+        assert "your reserved value" not in lowered
+        assert "never accept or offer anything" not in lowered
+        # It should still report the opponent's reservation, attributed to them.
+        assert "opponent's reserved value" in lowered
+
+    def test_own_utility_function_still_speaks_in_the_first_person(self, negotiator):
+        result = process_prompt("{{utility-function:text}}", negotiator)
+        assert "your reserved value" in result.lower()
+        assert "opponent's reserved value" not in result.lower()

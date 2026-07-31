@@ -942,7 +942,9 @@ Rules:
     1. "outcome" MUST be a JSON list with exactly one value per issue, in the
        issue order given, each value taken from that issue's allowed values.
        An invalid outcome cannot be accepted by anyone and wastes the round.
-    2. Never offer something worth at or below your reserved value.
+    2. Never offer something worth at or below your reserved value. Your
+       reserved value is the utility you receive if there is no agreement,
+       so such an offer would leave you worse off than walking away.
     3. Open near your best outcome and concede gradually as time runs out.
 
 Respond with ONLY this JSON: {"outcome": [<one value per issue>], "why": "<brief>"}"""
@@ -1071,8 +1073,9 @@ class LLMOffering(LLMComponent, OfferingPolicy):
 DEFAULT_ACCEPTANCE_PROMPT = """You decide whether to accept an offer.
 
 Accept only when the offer is good enough given how much time is left and what
-you could still get by continuing. Never accept anything worth at or below your
-reserved value — no deal is better than a bad deal.
+you could still get by continuing. Your reserved value is the utility you
+receive if this negotiation ends with no agreement, so never accept anything
+worth at or below it — walking away pays you more than such a deal would.
 
 Respond with ONLY this JSON: {"decision": "accept" | "reject", "why": "<brief>"}"""
 
@@ -1115,7 +1118,8 @@ class LLMAcceptance(LLMComponent, AcceptancePolicy):
             _time_status(ctx, state),
             f"Their offer: {offer}"
             + (
-                f" (worth {utility:.2f} to you; your reserved value is {reserved:.2f})"
+                f" (worth {utility:.2f} to you; your reserved value -- what you"
+                f" get if there is no agreement -- is {reserved:.2f})"
                 if utility is not None
                 else ""
             ),
