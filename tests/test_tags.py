@@ -245,12 +245,13 @@ class TestProcessPrompt:
         assert "No utility function" in result or "not available" in result.lower()
 
     def test_opponent_ufun_unknown(self, negotiator):
-        """Test opponent-utility-function when unknown."""
+        """Self-contained: nothing at all (no heading) when unknown, so a
+        prompt built around this tag shows no dangling section."""
         negotiator._private_info = {}
         prompt = "{{opponent-utility-function}}"
         result = process_prompt(prompt, negotiator)
 
-        assert "unknown" in result.lower() or "Unknown" in result
+        assert result == ""
 
     def test_opponent_ufun_known(self, negotiator, ufun):
         """Test opponent-utility-function when known."""
@@ -273,6 +274,84 @@ class TestProcessPrompt:
         # Both should produce similar text output (not JSON)
         assert "{{" not in result1
         assert "{{" not in result2
+
+
+class TestAnnotationTags:
+    """{{annotation}}/{{private-annotation}} and their dotted-key form."""
+
+    def test_annotation_empty_when_no_nmi(self, negotiator):
+        assert negotiator.nmi is None
+        assert process_prompt("{{annotation}}", negotiator) == ""
+        assert process_prompt("{{annotation:json}}", negotiator) == ""
+
+    def test_annotation_empty_when_nmi_annotation_is_empty(self, negotiator, mock_nmi):
+        mock_nmi.annotation = {}
+        negotiator._nmi = mock_nmi
+        assert process_prompt("{{annotation}}", negotiator) == ""
+
+    def test_annotation_self_contained_when_present(self, negotiator, mock_nmi):
+        mock_nmi.annotation = {"domain": "camera", "n_issues": 3}
+        negotiator._nmi = mock_nmi
+
+        text = process_prompt("{{annotation:text}}", negotiator)
+        assert "annotation" in text.lower()
+        assert "camera" in text
+
+        as_json = process_prompt("{{annotation:json}}", negotiator)
+        assert "annotation" in as_json.lower()
+        payload = json.loads(as_json.split("\n", 1)[1])
+        assert payload == {"domain": "camera", "n_issues": 3}
+
+    def test_private_annotation_empty_when_absent(self, negotiator):
+        negotiator._private_info = {}
+        assert process_prompt("{{private-annotation}}", negotiator) == ""
+
+    def test_private_annotation_filters_out_opponent_ufun(self, negotiator, ufun):
+        """opponent_ufun is framework bookkeeping, not the caller's own data --
+        it must never leak into {{private-annotation}}, alone or otherwise."""
+        negotiator._private_info = {"opponent_ufun": ufun}
+        assert process_prompt("{{private-annotation}}", negotiator) == ""
+
+        negotiator._private_info = {"opponent_ufun": ufun, "role": "seller"}
+        text = process_prompt("{{private-annotation:text}}", negotiator)
+        assert "role" in text and "seller" in text
+        assert "opponent_ufun" not in text
+
+    def test_private_annotation_self_contained_when_present(self, negotiator):
+        negotiator._private_info = {"role": "seller", "target_price": 100}
+        as_json = process_prompt("{{private-annotation:json}}", negotiator)
+        assert "private" in as_json.lower()
+        payload = json.loads(as_json.split("\n", 1)[1])
+        assert payload == {"role": "seller", "target_price": 100}
+
+    def test_dotted_annotation_key_present_and_missing(self, negotiator, mock_nmi):
+        mock_nmi.annotation = {"domain": "camera"}
+        negotiator._nmi = mock_nmi
+
+        assert process_prompt("{{annotation.domain}}", negotiator) == "camera"
+        assert process_prompt("{{annotation.missing}}", negotiator) == ""
+
+    def test_dotted_annotation_key_json_format(self, negotiator, mock_nmi):
+        mock_nmi.annotation = {"n_issues": 3}
+        negotiator._nmi = mock_nmi
+        assert process_prompt("{{annotation.n_issues:json}}", negotiator) == "3"
+
+    def test_dotted_private_annotation_key(self, negotiator):
+        negotiator._private_info = {"role": "seller"}
+        assert process_prompt("{{private-annotation.role}}", negotiator) == "seller"
+        assert process_prompt("{{private-annotation.missing}}", negotiator) == ""
+
+    def test_dotted_private_annotation_cannot_reach_opponent_ufun(
+        self, negotiator, ufun
+    ):
+        negotiator._private_info = {"opponent_ufun": ufun}
+        assert process_prompt("{{private-annotation.opponent_ufun}}", negotiator) == ""
+
+    def test_unrelated_dotted_tag_is_left_unprocessed(self, negotiator):
+        """A dotted name that isn't one of the two known prefixes is left
+        alone (unknown tag), not swallowed by the dotted-path resolver."""
+        result = process_prompt("{{not-a-known-tag.x}}", negotiator)
+        assert result == "{{not-a-known-tag.x}}"
 
 
 class TestOfferTags:

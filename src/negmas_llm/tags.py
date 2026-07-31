@@ -59,6 +59,8 @@ class Tag(StrEnum):
     OPPONENT_UTILITY_FUNCTION = "opponent-utility-function"
     NMI = "nmi"
     CURRENT_STATE = "current-state"
+    ANNOTATION = "annotation"
+    PRIVATE_ANNOTATION = "private-annotation"
 
     # Reserved value tags
     RESERVED_VALUE = "reserved-value"
@@ -154,12 +156,71 @@ Returns the opponent's utility function (if known).
 
 **Description:**
 If the opponent's utility function is available (from private_info["opponent_ufun"]),
-returns its specification. Otherwise returns "Opponent utility function unknown".
+returns a self-contained block (heading and content together). Otherwise
+returns an empty string, so a prompt referencing this tag shows nothing at
+all -- no dangling heading -- when the opponent's utility function is unknown.
+
+**Example output (text), when known:**
+```
+The opponent's utility function follows.
+Opponent utility function: LinearAdditiveUtilityFunction(...)
+Opponent reserved value: 0.25
+```
+""",
+            "annotation": """\
+### `{{annotation}}`
+
+Returns the negotiation's shared annotation (`negotiator.nmi.annotation`) --
+metadata attached to the mechanism itself, visible to every negotiator.
+
+**Parameters:** None
+
+**Formats:**
+- `{{annotation}}` or `{{annotation:text}}` - Human-readable format
+- `{{annotation:json}}` - JSON format
+
+**Description:**
+Returns a self-contained block (heading and content together) when the
+annotation dict is non-empty. Returns an empty string when there is no NMI
+or the annotation is empty, so a prompt referencing this tag shows nothing
+at all when there is nothing to show.
+
+Use `{{annotation.<key>}}` to resolve a single key directly (e.g.
+`{{annotation.domain}}`) -- an empty string if the key is missing.
 
 **Example output (text):**
 ```
-Opponent utility function: LinearAdditiveUtilityFunction(...)
-Opponent reserved value: 0.25
+The negotiation annotation follows.
+domain is camera.
+```
+""",
+            "private-annotation": """\
+### `{{private-annotation}}`
+
+Returns this negotiator's own private annotation (`negotiator.annotation`,
+equivalently `negotiator.private_info`) -- information NOT shared with the
+opponent. The internal `opponent_ufun` key (used by negmas itself to carry
+an opponent-model result) is filtered out; this tag is for the caller's own
+private data (role, target price, scenario id, ...), not framework bookkeeping.
+
+**Parameters:** None
+
+**Formats:**
+- `{{private-annotation}}` or `{{private-annotation:text}}` - Human-readable format
+- `{{private-annotation:json}}` - JSON format
+
+**Description:**
+Returns a self-contained block (heading and content together) when there is
+private data beyond the filtered internal keys. Returns an empty string
+otherwise.
+
+Use `{{private-annotation.<key>}}` to resolve a single key directly -- an
+empty string if the key is missing.
+
+**Example output (text):**
+```
+Your private annotation (not shared with the opponent) follows.
+role is seller.
 ```
 """,
             "nmi": """\
@@ -612,21 +673,22 @@ def get_tag_handler(tag_name: str) -> TagHandler | None:
 # =============================================================================
 
 # Regex pattern for tags: {{tag_name:format(params)}}
-# - tag_name: alphanumeric with hyphens/underscores
+# - tag_name: alphanumeric with hyphens/underscores, plus dots for dotted-path
+#   tags like {{annotation.some-key}} (see _resolve_dotted_annotation_tag)
 # - :format is optional
 # - (params) is optional
 # We use a non-greedy pattern and handle nested parens separately
 _PARAMS_PATTERN = r"(\([^)]*(?:\([^)]*\)[^)]*)*\))?"  # (params) with one nesting
 _TAG_PATTERN = re.compile(
     r"\{\{"  # Opening {{
-    r"([a-zA-Z][a-zA-Z0-9_-]*)"  # Tag name (group 1)
+    r"([a-zA-Z][a-zA-Z0-9_.-]*)"  # Tag name (group 1)
     r"(?::([a-zA-Z]+))?"  # Optional :format (group 2)
     + _PARAMS_PATTERN  # Optional (params) (group 3)
     + r"\}\}"  # Closing }}
 )
 
 # More robust pattern for complex nested parentheses - used as fallback
-_TAG_START_PATTERN = re.compile(r"\{\{([a-zA-Z][a-zA-Z0-9_-]*)(?::([a-zA-Z]+))?")
+_TAG_START_PATTERN = re.compile(r"\{\{([a-zA-Z][a-zA-Z0-9_.-]*)(?::([a-zA-Z]+))?")
 
 
 def _find_matching_paren(s: str, start: int) -> int:
@@ -824,6 +886,12 @@ def _process_single_tag(
         tag_format = TagFormat((format_str or "text").lower())
     except ValueError:
         tag_format = TagFormat.TEXT
+
+    # Dotted-path tags (e.g. {{annotation.domain}}, {{private-annotation.role}})
+    # resolve a single key directly, ahead of the ordinary handler registry.
+    dotted = _resolve_dotted_annotation_tag(tag_name, tag_format, negotiator)
+    if dotted is not None:
+        return dotted
 
     # Parse parameters
     params = _parse_params(param_str)
@@ -1096,34 +1164,138 @@ def _handle_utility_function(ctx: TagContext) -> str:
 
 
 def _handle_opponent_utility_function(ctx: TagContext) -> str:
-    """Handle the opponent-utility-function tag."""
+    """Handle the opponent-utility-function tag.
+
+    Self-contained: returns "" (no heading, nothing at all) when the
+    opponent's utility function is unknown, rather than a heading followed
+    by a placeholder sentence -- a prompt built around this tag should not
+    show a section for information that does not exist.
+    """
     opponent_ufun: BaseUtilityFunction | None = None
     if ctx.negotiator.private_info:
         opponent_ufun = ctx.negotiator.private_info.get("opponent_ufun")
 
     if opponent_ufun is None:
-        return "Opponent utility function unknown"
+        return ""
 
+    heading = "The opponent's utility function follows.\n"
     if ctx.format == TagFormat.JSON:
         try:
             ufun_dict = serialize(opponent_ufun)
             ufun_dict.pop("__python_class__", None)
-            return json.dumps(ufun_dict, indent=2, default=str)
+            return heading + json.dumps(ufun_dict, indent=2, default=str)
         except Exception:
-            return json.dumps({"description": str(opponent_ufun)})
+            return heading + json.dumps({"description": str(opponent_ufun)})
     else:
         # Text format - use human-readable formatting for linear additive functions
         if hasattr(opponent_ufun, "weights") and hasattr(opponent_ufun, "values"):
-            return (
-                "The opponent's Utility Function follows.\n"
-                + _format_linear_additive_ufun(opponent_ufun, ctx.negotiator)
-            )
+            return heading + _format_linear_additive_ufun(opponent_ufun, ctx.negotiator)
         else:
             reserved = getattr(opponent_ufun, "reserved_value", None)
-            text = f"The opponent's utility function is {opponent_ufun}."
+            text = heading + f"The opponent's utility function is {opponent_ufun}."
             if reserved is not None:
                 text += f"\nThe opponent's reserved value is {reserved}."
             return text
+
+
+#: Keys in `Negotiator.private_info` that are framework bookkeeping, not the
+#: caller's own private data -- filtered out of {{private-annotation}} so it
+#: reflects only what the caller actually put there. `opponent_ufun` is
+#: registered by negmas' own `ModularNegotiator`/`MAPNegotiator` machinery
+#: whenever an opponent-model component is attached, not by the user.
+_PRIVATE_INFO_INTERNAL_KEYS = frozenset({"opponent_ufun"})
+
+
+def _handle_annotation(ctx: TagContext) -> str:
+    """Handle the annotation tag: the NMI's shared annotation.
+
+    Self-contained and empty-if-absent, like {{opponent-utility-function}}:
+    no NMI, or an empty annotation dict, both return "".
+    """
+    nmi = ctx.negotiator.nmi
+    data = nmi.annotation if nmi is not None else None
+    if not isinstance(data, dict) or not data:
+        return ""
+    heading = "The negotiation annotation follows.\n"
+    if ctx.format == TagFormat.JSON:
+        return heading + json.dumps(data, indent=2, default=str)
+    return heading + ctx.format_dict(data)
+
+
+def _handle_private_annotation(ctx: TagContext) -> str:
+    """Handle the private-annotation tag: this negotiator's own private data.
+
+    Filters out `_PRIVATE_INFO_INTERNAL_KEYS` first; empty (or all-internal)
+    returns "".
+    """
+    raw = ctx.negotiator.private_info
+    data = (
+        {k: v for k, v in raw.items() if k not in _PRIVATE_INFO_INTERNAL_KEYS}
+        if isinstance(raw, dict)
+        else {}
+    )
+    if not data:
+        return ""
+    heading = "Your private annotation (not shared with the opponent) follows.\n"
+    if ctx.format == TagFormat.JSON:
+        return heading + json.dumps(data, indent=2, default=str)
+    return heading + ctx.format_dict(data)
+
+
+#: Prefix -> function resolving that annotation dict for a negotiator, for
+#: dotted-path tags like {{annotation.domain}}/{{private-annotation.role}}.
+#: Checked in `_resolve_dotted_annotation_tag`, ahead of the ordinary handler
+#: registry -- these are not registered `Tag`s themselves, since the key
+#: (everything after the prefix) is arbitrary, not a fixed tag name.
+def _nmi_annotation_dict(n: Negotiator) -> dict[str, Any] | None:
+    data = n.nmi.annotation if n.nmi is not None else None
+    return data if isinstance(data, dict) else None
+
+
+def _private_annotation_dict(n: Negotiator) -> dict[str, Any] | None:
+    raw = n.private_info
+    if not isinstance(raw, dict):
+        return None
+    return {k: v for k, v in raw.items() if k not in _PRIVATE_INFO_INTERNAL_KEYS}
+
+
+_DOTTED_ANNOTATION_PREFIXES: dict[
+    str, Callable[[Negotiator], dict[str, Any] | None]
+] = {
+    "annotation.": _nmi_annotation_dict,
+    "private-annotation.": _private_annotation_dict,
+}
+
+
+def _resolve_dotted_annotation_tag(
+    tag_name: str, tag_format: TagFormat, negotiator: Negotiator
+) -> str | None:
+    """Resolve a dotted ``annotation.<key>``/``private-annotation.<key>`` tag.
+
+    Args:
+        tag_name: The full tag name as parsed (e.g. ``"annotation.domain"``).
+        tag_format: The requested output format.
+        negotiator: The negotiator to resolve the annotation against.
+
+    Returns:
+        ``None`` if `tag_name` does not start with a known dotted prefix (the
+        caller should fall through to the ordinary handler registry).
+        Otherwise the resolved value -- ``""`` if the key is missing, so a
+        prompt referencing a key that does not exist just shows nothing
+        rather than an error or a literal ``None``.
+    """
+    for prefix, get_data in _DOTTED_ANNOTATION_PREFIXES.items():
+        if not tag_name.startswith(prefix):
+            continue
+        key = tag_name[len(prefix) :]
+        data = get_data(negotiator) or {}
+        if key not in data:
+            return ""
+        value = data[key]
+        if tag_format == TagFormat.JSON:
+            return json.dumps(value, default=str)
+        return str(value)
+    return None
 
 
 def _get_my_offers(ctx: TagContext) -> list[Outcome]:
@@ -1717,6 +1889,8 @@ def _get_short_description(tag_name: str) -> str:
         "outcome-space": "The negotiation outcome space definition",
         "utility-function": "Your utility function",
         "opponent-utility-function": "Opponent's utility function (if known)",
+        "annotation": "The negotiation's shared annotation (if any)",
+        "private-annotation": "This negotiator's own private annotation (if any)",
         "nmi": "Negotiation mechanism interface info",
         "current-state": "Current negotiation state",
         "reserved-value": "Your walk-away point",
@@ -1747,6 +1921,8 @@ def _register_builtin_handlers() -> None:
     register_tag_handler(
         Tag.OPPONENT_UTILITY_FUNCTION, _handle_opponent_utility_function
     )
+    register_tag_handler(Tag.ANNOTATION, _handle_annotation)
+    register_tag_handler(Tag.PRIVATE_ANNOTATION, _handle_private_annotation)
     register_tag_handler(Tag.NMI, _handle_nmi)
     register_tag_handler(Tag.CURRENT_STATE, _handle_current_state)
     register_tag_handler(Tag.RESERVED_VALUE, _handle_reserved_value)

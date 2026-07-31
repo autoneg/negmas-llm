@@ -470,6 +470,9 @@ class LLMMetaNegotiator(SAOMetaNegotiator):
                 2. Acknowledge any message received from the other party.
                 3. Keep it brief (1-3 sentences) and professional.
 
+            {{annotation:json}}
+            {{private-annotation:json}}
+
             Respond with ONLY this JSON:
             {
                 "text": "your message"

@@ -162,8 +162,9 @@ DEFAULT_PREFERENCES_PROMPT = _dedent("""
     {{{{utility-function:text}}}}
     Your reserved value is {{{{reserved-value}}}}.
 
-    The opponent's utility function follows.
     {{{{opponent-utility-function:text}}}}
+    {{{{annotation:json}}}}
+    {{{{private-annotation:json}}}}
     """).format(nmi_docstring=_SAONMI_DOCSTRING, ufun_docstring=_UFUN_DOCSTRING)
 
 DEFAULT_PREFERENCES_CHANGED_PROMPT = _dedent("""
@@ -181,8 +182,9 @@ DEFAULT_PREFERENCES_CHANGED_PROMPT = _dedent("""
     {{{{utility-function:text}}}}
     Your reserved value is {{{{reserved-value}}}}.
 
-    The opponent's utility function follows.
     {{{{opponent-utility-function:text}}}}
+    {{{{annotation:json}}}}
+    {{{{private-annotation:json}}}}
     """).format(
     nmi_docstring=_SAONMI_DOCSTRING,
     ufun_docstring=_UFUN_DOCSTRING,

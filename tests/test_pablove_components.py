@@ -953,6 +953,31 @@ def test_conversation_mode_seeds_preferences_once_then_grows_history(domain):
     assert contents.count(seed_user) == 1, "seeding must not repeat"
 
 
+def test_conversation_mode_seed_message_reflects_annotations(domain):
+    """The seeding message reuses DEFAULT_PREFERENCES_PROMPT, so a mechanism-
+    level (shared) and negotiator-level (private) annotation both show up --
+    with no clutter for whichever one is absent."""
+    os_, u1, _ = domain
+    offering = LLMOffering()
+    neg = make_pablove(
+        acceptance=AcceptTop(0),
+        offering=offering,
+        ufun=u1,
+        private_info={"role": "seller"},
+    )
+    m = SAOMechanism(outcome_space=os_, n_steps=4, annotation={"domain": "camera"})
+    m.add(neg)
+
+    with patch(
+        "litellm.completion",
+        side_effect=lambda *a, **k: _mock('{"outcome": [150, 2]}'),
+    ) as mock:
+        offering.call_llm("system", "user")
+    seed_user = mock.call_args_list[0].kwargs["messages"][-1]["content"]
+    assert "camera" in seed_user
+    assert "seller" in seed_user
+
+
 def test_conversation_mode_system_prompt_has_team_briefing(domain):
     """Every conversational component's system prompt names its own role
     and the rest of the PABLO-ve pipeline -- not just its task instructions."""

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from negmas import make_issue, make_os
@@ -48,6 +48,15 @@ if TEST_API_KEY:
     TEST_LLM_EXTRA_KWARGS["api_key"] = TEST_API_KEY
 if TEST_API_BASE:
     TEST_LLM_EXTRA_KWARGS["api_base"] = TEST_API_BASE
+
+
+def _mock_response(content: str) -> MagicMock:
+    """A mocked litellm.completion response carrying no tool calls."""
+    r = MagicMock()
+    r.choices = [MagicMock()]
+    r.choices[0].message.content = content
+    r.choices[0].message.tool_calls = None
+    return r
 
 
 class TestMetaNegotiatorAvailability:
@@ -795,3 +804,65 @@ class TestRecommenderMetaNegotiators:
 
         assert isinstance(response, ExtendedResponseType)
         assert response.response == ResponseType.ACCEPT_OFFER  # 2 vs 1 majority
+
+
+class TestLLMMetaNegotiatorAnnotationTags:
+    """The default system prompt reflects {{annotation}}/{{private-annotation}}
+    -- both self-contained and empty (no clutter) when absent."""
+
+    def _system_message(self, mock):
+        for call in mock.call_args_list:
+            for msg in call.kwargs["messages"]:
+                if msg["role"] == "system":
+                    return msg["content"]
+        raise AssertionError("no system message was sent")
+
+    def test_no_annotation_produces_no_clutter(self, simple_negotiation_setup):
+        outcome_space, ufun1, _ = simple_negotiation_setup
+        base = BoulwareTBNegotiator(ufun=ufun1)
+        meta = LLMMetaNegotiator(
+            base_negotiator=base,
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
+            ufun=ufun1,
+        )
+        mechanism = SAOMechanism(outcome_space=outcome_space, n_steps=10)
+        mechanism.add(meta)
+
+        with patch(
+            "negmas_llm.ufun_tools.litellm.completion",
+            return_value=_mock_response('{"text": "ok"}'),
+        ) as mock:
+            meta.propose(mechanism.state)
+
+        system = self._system_message(mock)
+        assert "annotation" not in system.lower()
+
+    def test_shared_and_private_annotation_both_reflected(
+        self, simple_negotiation_setup
+    ):
+        outcome_space, ufun1, _ = simple_negotiation_setup
+        base = BoulwareTBNegotiator(ufun=ufun1)
+        meta = LLMMetaNegotiator(
+            base_negotiator=base,
+            provider=TEST_PROVIDER,
+            model=TEST_MODEL,
+            **TEST_LLM_EXTRA_KWARGS,
+            ufun=ufun1,
+            private_info={"role": "seller"},
+        )
+        mechanism = SAOMechanism(
+            outcome_space=outcome_space, n_steps=10, annotation={"domain": "camera"}
+        )
+        mechanism.add(meta)
+
+        with patch(
+            "negmas_llm.ufun_tools.litellm.completion",
+            return_value=_mock_response('{"text": "ok"}'),
+        ) as mock:
+            meta.propose(mechanism.state)
+
+        system = self._system_message(mock)
+        assert "camera" in system
+        assert "seller" in system
