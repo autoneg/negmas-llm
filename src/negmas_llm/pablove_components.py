@@ -257,16 +257,23 @@ class LLMComponent:
             describing the domain (subclasses that describe the domain only).
         summarize_every: In ``"conversation"`` mode, once this component's own
             conversation holds more than this many exchanges (user/assistant
-            pairs -- one per call, so this is a round count, not a wall-clock
-            or byte-size trigger), everything older than the most recent
-            ``summarize_keep`` exchanges is collapsed into one LLM-generated
-            summary message. The check re-fires as the conversation grows
-            past the threshold again, so this is a recurring cadence, not a
-            one-time cutoff. ``None`` (default) disables summarization
-            entirely -- the conversation grows for the life of the
-            negotiation. See :mod:`negmas_llm.summarize`.
+            pairs -- one per call, so this is a round count), everything
+            older than the most recent ``summarize_keep`` exchanges is
+            collapsed into one LLM-generated summary message. The check
+            re-fires as the conversation grows past the threshold again, so
+            this is a recurring cadence, not a one-time cutoff. ``None``
+            (default) disables this trigger. Never wall-clock time; see also
+            ``summarize_over_chars`` for a size-based trigger instead of (or
+            alongside) this round-count one. See :mod:`negmas_llm.summarize`.
         summarize_keep: How many of the most recent exchanges stay verbatim
-            (never summarized) each time summarization runs.
+            (never summarized) each time summarization runs, regardless of
+            which trigger fired.
+        summarize_over_chars: Alternative/additional trigger to
+            ``summarize_every``: once this component's own conversation's
+            total character length (across every message) exceeds this many
+            characters, summarization runs -- a token-free proxy for prompt
+            size. ``None`` (default) disables this trigger. Either trigger
+            firing is enough to summarize.
     """
 
     #: This component's role name, one of `_TEAM_ORDER`. Overridden per
@@ -294,6 +301,7 @@ class LLMComponent:
     domain_values_limit: int = field(default=12, kw_only=True)
     summarize_every: int | None = field(default=None, kw_only=True)
     summarize_keep: int = field(default=3, kw_only=True)
+    summarize_over_chars: int | None = field(default=None, kw_only=True)
     token_usage: TokenUsage = field(factory=TokenUsage, init=False)
     _resolved: Any = field(default=None, init=False)
     _conversation_history: list[dict[str, str]] = field(factory=list, init=False)
@@ -499,7 +507,7 @@ class LLMComponent:
         if conversational:
             self._conversation_history.append({"role": "user", "content": user})
             self._conversation_history.append({"role": "assistant", "content": text})
-            if self.summarize_every:
+            if self.summarize_every or self.summarize_over_chars:
 
                 def _raw_call(s: str, u: str) -> str:
                     _, raw_kwargs, _, _ = self._prepare_call()
@@ -514,6 +522,7 @@ class LLMComponent:
                 self._conversation_history = maybe_summarize(
                     self._conversation_history,
                     every=self.summarize_every,
+                    over_chars=self.summarize_over_chars,
                     keep=self.summarize_keep,
                     raw_call=_raw_call,
                 )

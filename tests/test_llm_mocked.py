@@ -594,3 +594,25 @@ class TestConversationSummarization:
             neg._send_to_llm("round-2")  # 2 > every(1) -> triggers summarization
         summarize_call = mock.call_args_list[-1]
         assert "tools" not in summarize_call.kwargs
+
+    def test_summarize_over_chars_triggers_independent_of_summarize_every(
+        self, simple_negotiation_setup
+    ):
+        """A size-based (character count) trigger, with no round-count
+        trigger set at all."""
+        _, ufun1, _ = simple_negotiation_setup
+        neg = OllamaNegotiator(
+            model="test-model",
+            ufun=ufun1,
+            summarize_every=None,
+            summarize_over_chars=30,
+            summarize_keep=0,
+        )
+        with patch(
+            "litellm.completion",
+            side_effect=lambda *a, **k: create_mock_llm_response("ok"),
+        ):
+            neg._send_to_llm("a reasonably long round message here")
+        history = neg._conversation_history
+        assert len(history) // 2 == 1, "collapsed to just the summary (keep=0)"
+        assert "Summary of earlier turns" in history[0]["content"]

@@ -1159,3 +1159,21 @@ def test_summarize_every_uses_a_fresh_one_off_call_not_the_growing_history(domai
     summarize_call = mock.call_args_list[-1]
     assert "tools" not in summarize_call.kwargs
     assert len(summarize_call.kwargs["messages"]) == 2, "one-off, no history of its own"
+
+
+def test_summarize_over_chars_triggers_independent_of_summarize_every(domain):
+    """A size-based (character count) trigger, with no round-count trigger
+    set at all -- the user's own alternative to summarize_every."""
+    _, u1, _ = domain
+    offering = LLMOffering(
+        summarize_every=None, summarize_over_chars=40, summarize_keep=0
+    )
+    make_pablove(acceptance=AcceptTop(0), offering=offering, ufun=u1)
+    with patch(
+        "litellm.completion",
+        side_effect=lambda *a, **k: _mock('{"outcome": [150, 2]}'),
+    ):
+        offering.call_llm("system", "a moderately long decision message here")
+    history = offering._conversation_history
+    assert len(history) // 2 == 1, "collapsed to just the summary (keep=0)"
+    assert "Summary of earlier turns" in history[0]["content"]

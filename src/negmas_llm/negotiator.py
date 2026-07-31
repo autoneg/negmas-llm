@@ -377,16 +377,23 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             to decide.
         summarize_every: Once ``_conversation_history`` holds more than this
             many exchanges (a round count -- one user/assistant pair per
-            round, not wall-clock time or a byte/token size trigger),
-            everything older than the most recent ``summarize_keep``
+            round), everything older than the most recent ``summarize_keep``
             exchanges is collapsed into one LLM-generated summary message.
             Re-fires as the conversation grows past the threshold again, so
             this is a recurring cadence bounding the conversation's size, not
-            a one-time cutoff. ``None`` (default) disables summarization --
-            the conversation grows for the life of the negotiation. See
-            :func:`negmas_llm.summarize.maybe_summarize`.
+            a one-time cutoff. ``None`` (default) disables this trigger.
+            Never wall-clock time; see also ``summarize_over_chars`` for a
+            size-based trigger instead of (or alongside) this round-count
+            one. See :func:`negmas_llm.summarize.maybe_summarize`.
         summarize_keep: How many of the most recent exchanges stay verbatim
-            (never summarized) each time summarization runs.
+            (never summarized) each time summarization runs, regardless of
+            which trigger fired.
+        summarize_over_chars: Alternative/additional trigger to
+            ``summarize_every``: once ``_conversation_history``'s total
+            character length (across every message) exceeds this many
+            characters, summarization runs -- a token-free proxy for prompt
+            size. ``None`` (default) disables this trigger. Either trigger
+            firing is enough to summarize.
         include_reasoning: If True, include the LLM's reasoning in the response
             data sent to the partner. Default is False (reasoning is not shared).
         raise_on_parsing_error: If True, raise a ValueError when the LLM returns
@@ -446,6 +453,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         use_ufun_tools: bool = True,
         summarize_every: int | None = None,
         summarize_keep: int = 3,
+        summarize_over_chars: int | None = None,
         include_reasoning: bool = False,
         raise_on_parsing_error: bool = False,
         verbose: bool = False,
@@ -509,6 +517,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         self.use_ufun_tools = use_ufun_tools
         self.summarize_every = summarize_every
         self.summarize_keep = summarize_keep
+        self.summarize_over_chars = summarize_over_chars
         self.include_reasoning = include_reasoning
         self.raise_on_parsing_error = raise_on_parsing_error
         self.verbose = verbose
@@ -835,7 +844,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         # Update conversation history
         self._conversation_history.append({"role": role, "content": message})
         self._conversation_history.append({"role": "assistant", "content": response})
-        if self.summarize_every:
+        if self.summarize_every or self.summarize_over_chars:
 
             def _raw_call(system: str, user: str) -> str:
                 return self._call_llm(
@@ -849,6 +858,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             self._conversation_history = maybe_summarize(
                 self._conversation_history,
                 every=self.summarize_every,
+                over_chars=self.summarize_over_chars,
                 keep=self.summarize_keep,
                 raw_call=_raw_call,
             )
