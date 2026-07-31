@@ -532,3 +532,65 @@ class TestOutcomeParsing:
                         f"Outcome should be tuple, got {type(offer)}"
                     )
                     assert not isinstance(offer, list), "Outcome should not be a list"
+
+
+class TestConversationSummarization:
+    """summarize_every: opt-in, round-count-triggered history collapsing."""
+
+    def test_disabled_by_default_history_just_grows(self, simple_negotiation_setup):
+        _, ufun1, _ = simple_negotiation_setup
+        neg = OllamaNegotiator(model="test-model", ufun=ufun1)
+        with patch(
+            "litellm.completion",
+            side_effect=lambda *a, **k: create_mock_llm_response(
+                json.dumps({"response_type": "reject", "outcome": None, "text": "hi"})
+            ),
+        ):
+            for _ in range(5):
+                neg._send_to_llm("round")
+        assert len(neg._conversation_history) // 2 == 5
+
+    def test_collapses_once_past_threshold_and_refires(self, simple_negotiation_setup):
+        _, ufun1, _ = simple_negotiation_setup
+        neg = OllamaNegotiator(
+            model="test-model", ufun=ufun1, summarize_every=2, summarize_keep=1
+        )
+        call_n = 0
+
+        def _responses(*a, **k):
+            nonlocal call_n
+            call_n += 1
+            return create_mock_llm_response(f"RESPONSE-{call_n}")
+
+        with patch("litellm.completion", side_effect=_responses):
+            neg._send_to_llm("round-1")
+            neg._send_to_llm("round-2")  # 2 exchanges > every(2)? no -- exactly 2
+        # Exactly at the threshold does not yet collapse (strict > every).
+        assert len(neg._conversation_history) // 2 == 2
+
+        with patch("litellm.completion", side_effect=_responses):
+            neg._send_to_llm("round-3")  # 3 > 2 -> collapses
+        history = neg._conversation_history
+        assert len(history) // 2 == 2, "one summary + summarize_keep=1"
+        assert "Summary of earlier turns" in history[0]["content"]
+        assert history[-2]["content"] == "round-3"
+
+    def test_summarization_call_carries_no_ufun_tools(self, simple_negotiation_setup):
+        """The summarizer's own request must not offer ufun tools -- it
+        compresses text, it does not decide anything."""
+        _, ufun1, _ = simple_negotiation_setup
+        neg = OllamaNegotiator(
+            model="test-model",
+            ufun=ufun1,
+            use_ufun_tools=True,
+            summarize_every=1,
+            summarize_keep=0,
+        )
+        with patch(
+            "litellm.completion",
+            side_effect=lambda *a, **k: create_mock_llm_response("ok"),
+        ) as mock:
+            neg._send_to_llm("round-1")  # 1 exchange, at threshold: no trigger yet
+            neg._send_to_llm("round-2")  # 2 > every(1) -> triggers summarization
+        summarize_call = mock.call_args_list[-1]
+        assert "tools" not in summarize_call.kwargs

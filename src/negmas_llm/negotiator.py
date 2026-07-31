@@ -38,6 +38,7 @@ from negmas_llm.config import (
     effective_llm_config,
     resolve_llm_config,
 )
+from negmas_llm.summarize import maybe_summarize
 from negmas_llm.tags import process_prompt as _process_prompt
 from negmas_llm.token_usage import TokenUsage
 from negmas_llm.ufun_tools import run_llm_call
@@ -372,6 +373,18 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             calls happen fresh (they are not added to the stored conversation
             history), so the LLM re-derives utilities every time it is asked
             to decide.
+        summarize_every: Once ``_conversation_history`` holds more than this
+            many exchanges (a round count -- one user/assistant pair per
+            round, not wall-clock time or a byte/token size trigger),
+            everything older than the most recent ``summarize_keep``
+            exchanges is collapsed into one LLM-generated summary message.
+            Re-fires as the conversation grows past the threshold again, so
+            this is a recurring cadence bounding the conversation's size, not
+            a one-time cutoff. ``None`` (default) disables summarization --
+            the conversation grows for the life of the negotiation. See
+            :func:`negmas_llm.summarize.maybe_summarize`.
+        summarize_keep: How many of the most recent exchanges stay verbatim
+            (never summarized) each time summarization runs.
         include_reasoning: If True, include the LLM's reasoning in the response
             data sent to the partner. Default is False (reasoning is not shared).
         raise_on_parsing_error: If True, raise a ValueError when the LLM returns
@@ -429,6 +442,8 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         num_retries: int | None = None,
         use_structured_output: bool = True,
         use_ufun_tools: bool = True,
+        summarize_every: int | None = None,
+        summarize_keep: int = 3,
         include_reasoning: bool = False,
         raise_on_parsing_error: bool = False,
         verbose: bool = False,
@@ -490,6 +505,8 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         self.num_retries: int | None = resolved.num_retries
         self.use_structured_output = use_structured_output
         self.use_ufun_tools = use_ufun_tools
+        self.summarize_every = summarize_every
+        self.summarize_keep = summarize_keep
         self.include_reasoning = include_reasoning
         self.raise_on_parsing_error = raise_on_parsing_error
         self.verbose = verbose
@@ -633,6 +650,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         require_json: bool = False,
         max_tokens: int | None = None,
         model_type: str | None = None,
+        force_no_tools: bool = False,
     ) -> str:
         """Call the LLM and get a response.
 
@@ -647,6 +665,10 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
                 re-resolved from the ``NEGMAS_LLM_<...>_<VAR>_<TYPE>`` variables so
                 different parts of the negotiator can use different models. When
                 None, the negotiator's own construction-time settings are used.
+            force_no_tools: Never offer ufun tools for this call, regardless of
+                :attr:`use_ufun_tools` -- used internally for the conversation
+                summarizer's own one-off call, which compresses text and has no
+                need to compute utilities.
 
         Returns:
             The LLM response text.
@@ -654,7 +676,9 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         cfg = effective_llm_config(self, model_type)
         # Utility-function tool-use is offered only when enabled and a ufun is
         # actually available to compute against.
-        tools_enabled = self.use_ufun_tools and self.ufun is not None
+        tools_enabled = (
+            not force_no_tools and self.use_ufun_tools and self.ufun is not None
+        )
         call_messages = list(messages)
         kwargs: dict[str, Any] = {
             "model": litellm_model_string(cfg.provider, cfg.model),
@@ -809,6 +833,23 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         # Update conversation history
         self._conversation_history.append({"role": role, "content": message})
         self._conversation_history.append({"role": "assistant", "content": response})
+        if self.summarize_every:
+
+            def _raw_call(system: str, user: str) -> str:
+                return self._call_llm(
+                    [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    force_no_tools=True,
+                )
+
+            self._conversation_history = maybe_summarize(
+                self._conversation_history,
+                every=self.summarize_every,
+                keep=self.summarize_keep,
+                raw_call=_raw_call,
+            )
 
         return response
 

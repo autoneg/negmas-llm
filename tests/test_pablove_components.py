@@ -990,6 +990,26 @@ def test_negotiator_memory_mode_overrides_every_component(domain):
     del neg  # constructed only to trigger the override; not otherwise used
 
 
+def test_components_can_each_use_a_different_memory_mode(domain):
+    """Without a negotiator-level override, each component's own memory_mode
+    stands -- a negotiator can freely mix "none"/"conversation"/"shared"
+    across its Perception/Language/Bidding/etc. components."""
+    _, u1, _ = domain
+    perception = LLMPerception(memory_mode="none")
+    language = LLMLanguage(memory_mode="conversation")
+    offering = LLMOffering(memory_mode="shared")
+    make_pablove(
+        acceptance=AcceptTop(0),
+        offering=offering,
+        perception=perception,
+        language=language,
+        ufun=u1,
+    )
+    assert perception.memory_mode == "none"
+    assert language.memory_mode == "conversation"
+    assert offering.memory_mode == "shared"
+
+
 # ---------------------------------------------------------------------------
 # memory_mode: "shared" -- one cached setup block on the negotiator, pulled
 # fresh into each call, instead of a per-component growing chat.
@@ -1044,3 +1064,73 @@ def test_shared_mode_system_prompt_has_team_briefing_and_shared_note(domain):
     system = offering.build_system()
     assert "Bidding" in system and "this is you" in system
     assert "Negotiation memory" in system
+
+
+# ---------------------------------------------------------------------------
+# summarize_every: opt-in, round-count-triggered conversation summarization
+# (only meaningful in "conversation" mode -- "none"/"shared" never grow a
+# per-component history in the first place).
+# ---------------------------------------------------------------------------
+
+
+def test_summarize_every_none_never_collapses_history(domain):
+    """Disabled by default: a long conversation just keeps growing."""
+    _, u1, _ = domain
+    offering = LLMOffering()  # summarize_every=None by default
+    make_pablove(acceptance=AcceptTop(0), offering=offering, ufun=u1)
+    with patch(
+        "litellm.completion",
+        side_effect=lambda *a, **k: _mock('{"outcome": [150, 2]}'),
+    ):
+        for _ in range(10):
+            offering.call_llm("system", "decide")
+    # seed + 10 decisions = 11 exchanges, never collapsed.
+    assert len(offering._conversation_history) // 2 == 11
+
+
+def test_summarize_every_collapses_older_exchanges_once_threshold_is_passed(domain):
+    _, u1, _ = domain
+    offering = LLMOffering(summarize_every=2, summarize_keep=1)
+    make_pablove(acceptance=AcceptTop(0), offering=offering, ufun=u1)
+
+    call_n = 0
+
+    def _responses(*a, **k):
+        nonlocal call_n
+        call_n += 1
+        return _mock(f"RESPONSE-{call_n}")
+
+    with patch("litellm.completion", side_effect=_responses):
+        offering.call_llm("system", "decision-1")  # exchanges: seed, decision-1 (2)
+        offering.call_llm("system", "decision-2")  # 3 > every(2) -> collapses
+    history = offering._conversation_history
+    assert len(history) // 2 == 2, "collapsed to one summary + summarize_keep=1"
+    assert "Summary of earlier turns" in history[0]["content"]
+    # The most recent exchange (decision-2) survives verbatim.
+    assert history[-2]["content"] == "decision-2"
+
+    with patch("litellm.completion", side_effect=_responses):
+        offering.call_llm(
+            "system", "decision-3"
+        )  # back to 3 exchanges -> collapses again
+    history = offering._conversation_history
+    assert len(history) // 2 == 2, "re-fires once past the threshold again"
+    assert history[-2]["content"] == "decision-3"
+
+
+def test_summarize_every_uses_a_fresh_one_off_call_not_the_growing_history(domain):
+    """The summarization request itself must not itself grow the very
+    history it is meant to shrink, and must not carry ufun tools (it is a
+    text-compression task, not a negotiation decision)."""
+    _, u1, _ = domain
+    offering = LLMOffering(summarize_every=1, summarize_keep=0)
+    make_pablove(acceptance=AcceptTop(0), offering=offering, ufun=u1)
+    with patch(
+        "litellm.completion",
+        side_effect=lambda *a, **k: _mock('{"outcome": [150, 2]}'),
+    ) as mock:
+        offering.call_llm("system", "decision-1")
+    # seed (1) + decision-1 (1) = 2 exchanges > every(1) -> one summarization call.
+    summarize_call = mock.call_args_list[-1]
+    assert "tools" not in summarize_call.kwargs
+    assert len(summarize_call.kwargs["messages"]) == 2, "one-off, no history of its own"
