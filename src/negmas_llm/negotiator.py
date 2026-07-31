@@ -9,10 +9,8 @@ import textwrap
 import time
 import warnings
 from abc import ABC
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any
 
-import litellm
-from litellm import ModelResponse
 from negmas import Agent, Controller, Preferences
 from negmas.common import PreferencesChange
 from negmas.gb import GBState
@@ -42,15 +40,7 @@ from negmas_llm.config import (
 )
 from negmas_llm.tags import process_prompt as _process_prompt
 from negmas_llm.token_usage import TokenUsage
-from negmas_llm.ufun_tools import (
-    MAX_TOOL_ROUNDS,
-    UFUN_TOOL_SPECS,
-    assistant_tool_call_entry,
-    tool_result_messages,
-)
-
-if TYPE_CHECKING:
-    from litellm.types.utils import Choices
+from negmas_llm.ufun_tools import run_llm_call
 
 __all__ = [
     "LLMNegotiator",
@@ -668,7 +658,6 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         call_messages = list(messages)
         kwargs: dict[str, Any] = {
             "model": litellm_model_string(cfg.provider, cfg.model),
-            "messages": call_messages,
             **self.llm_kwargs,
         }
         # Model-dependent parameters: an explicit constructor/per-call value
@@ -700,7 +689,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             # emits tool_calls. Tool-use wins here; ``_parse_llm_response``'s
             # regex-based JSON extraction (already used for providers without
             # structured-output support) covers the final answer instead.
-            kwargs["tools"] = UFUN_TOOL_SPECS
+            pass
         elif require_json and self.use_structured_output:
             # Add structured output / JSON mode if requested and supported
             if _supports_structured_output(cfg.provider):
@@ -735,38 +724,21 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
         # Time the LLM call(s). When tool-use is enabled this loops: run any
         # requested ufun tools in-process and feed results back until the
         # model gives a final (non-tool-call) answer.
-        start_time = time.perf_counter()
-        response_text = ""
-        for _round in range(MAX_TOOL_ROUNDS + 1):
-            call_start = time.perf_counter()
-            response = litellm.completion(**kwargs)
-            self.token_usage.add(response, seconds=time.perf_counter() - call_start)
-            model_response = cast(ModelResponse, response)
-            choices = cast(list["Choices"], model_response.choices)
-            message = choices[0].message
-            tool_calls = getattr(message, "tool_calls", None) if tools_enabled else None
-
-            if tool_calls:
-                call_messages.append(assistant_tool_call_entry(message, tool_calls))
-
-                def _log_tool_call(name: str, arguments: str, result: Any) -> None:
-                    if self.verbose and console:
-                        console.print(
-                            f"[dim green]ufun tool {name}"
-                            f"({arguments}) -> {result}[/dim green]"
-                        )
-
-                call_messages.extend(
-                    tool_result_messages(
-                        tool_calls,
-                        self.ufun,  # type: ignore[arg-type]
-                        on_call=_log_tool_call,
-                    )
+        def _log_tool_call(name: str, arguments: str, result: Any) -> None:
+            if self.verbose and console:
+                console.print(
+                    f"[dim green]ufun tool {name}({arguments}) -> {result}[/dim green]"
                 )
-                continue
 
-            response_text = message.content or ""
-            break
+        start_time = time.perf_counter()
+        response_text = run_llm_call(
+            kwargs,
+            call_messages,
+            self.ufun,
+            tools_enabled,
+            self.token_usage,
+            on_tool_call=_log_tool_call,
+        )
         elapsed_time = time.perf_counter() - start_time
 
         # Print response if verbose mode is enabled (using rich)

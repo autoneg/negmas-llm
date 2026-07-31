@@ -23,10 +23,10 @@ from __future__ import annotations
 import json
 import re
 import time
-from typing import Any
+from typing import Any, ClassVar
 
-import litellm
 from attrs import define, field
+from negmas.common import PreferencesChange
 from negmas.gb.components import AcceptancePolicy, OfferingPolicy
 from negmas.gb.components.models.ufun import UFunModel
 from negmas.outcomes import ExtendedOutcome
@@ -41,6 +41,10 @@ from negmas_llm.common import (
     word_limit_instruction,
 )
 from negmas_llm.config import DEFAULT_PROVIDER, resolve_llm_config
+from negmas_llm.negotiator import (
+    DEFAULT_PREFERENCES_CHANGED_PROMPT,
+    DEFAULT_PREFERENCES_PROMPT,
+)
 from negmas_llm.pablove import (
     Ending,
     EndingDecision,
@@ -52,13 +56,10 @@ from negmas_llm.pablove import (
     Validation,
     ValidationResult,
 )
+from negmas_llm.summarize import maybe_summarize
+from negmas_llm.tags import process_prompt
 from negmas_llm.token_usage import TokenUsage
-from negmas_llm.ufun_tools import (
-    MAX_TOOL_ROUNDS,
-    UFUN_TOOL_SPECS,
-    assistant_tool_call_entry,
-    tool_result_messages,
-)
+from negmas_llm.ufun_tools import run_llm_call
 
 __all__ = [
     "LLMComponent",
@@ -80,6 +81,94 @@ __all__ = [
 # =============================================================================
 # LLM plumbing for components
 # =============================================================================
+
+
+#: Each role's job, in pipeline order. Single source of truth for the "team
+#: briefing" every component's system prompt gets in conversational mode --
+#: add a role here and every component's briefing mentions it, with no other
+#: change needed.
+_TEAM_ROLES: dict[str, str] = {
+    "Perception": (
+        "reads the partner's last message and reports what it did -- acts, "
+        "sentiment, commitments -- deciding nothing."
+    ),
+    "Opponent model": (
+        "estimates what the partner values, from their offers and what they said."
+    ),
+    "Bidding": "chooses the next outcome to propose.",
+    "Acceptance": "decides whether to accept the partner's standing offer.",
+    "Language": (
+        "turns whichever decision was made (offer, accept, reject, end) into "
+        "the message actually sent to the partner; it may not change the decision."
+    ),
+    "Validation": (
+        "checks that the message is true of the decision, and may rewrite it."
+    ),
+    "Ending": "decides whether to walk away from the negotiation.",
+}
+_TEAM_ORDER: tuple[str, ...] = (
+    "Perception",
+    "Opponent model",
+    "Bidding",
+    "Acceptance",
+    "Language",
+    "Validation",
+    "Ending",
+)
+
+
+def _team_briefing(role: str) -> str:
+    """A short briefing on this component's place in the PABLO-ve pipeline.
+
+    PABLO-ve splits one negotiation decision across independent roles, each of
+    which sees only its own slice of the problem -- so, unlike
+    `~negmas_llm.negotiator.LLMNegotiator`'s "you are an expert negotiator"
+    framing (which suits a single decision-maker), a component here is told it
+    is one member of a team, where in the pipeline it sits, and what every
+    other role does. That is usually enough for a component to avoid
+    second-guessing a decision made elsewhere, without letting it see or
+    change another role's output.
+    """
+    lines = [
+        "You are one role on a negotiation team, not a lone negotiator -- the "
+        "team's shared goal is to maximize ITS utility while reaching "
+        "agreement when possible. Each round, some of these roles run, in "
+        "this order, each handing its result to the next:",
+        "",
+    ]
+    for name in _TEAM_ORDER:
+        marker = "  <- this is you" if name == role else ""
+        lines.append(f"    {name}: {_TEAM_ROLES[name]}{marker}")
+    lines.append("")
+    lines.append(
+        "Not every round runs every role, and not every teammate is an LLM -- "
+        "some roles are template-based, purely deterministic, or absent "
+        "entirely for a given negotiator."
+    )
+    lines.append(f"\nYour role is {role}.")
+    return "\n".join(lines)
+
+
+#: Appended to a ``"conversation"``-mode component's system prompt: the setup
+#: (utility function, outcome space, NMI) and the negotiation's history live
+#: in this component's own persistent conversation rather than being
+#: re-described every call -- see `LLMComponent.on_preferences_changed`.
+_CONVERSATION_MEMORY_NOTE = (
+    "Your utility function, the outcome space, and this negotiation's setup "
+    "were given to you earlier in this conversation, and stay available "
+    "there -- you do not need them repeated. So does the history of this "
+    "negotiation in your role so far: past offers, what was said, and your "
+    "own past decisions, which stay in this conversation as it grows."
+)
+
+#: Appended to a ``"shared"``-mode component's system prompt: the setup lives
+#: on the negotiator instead of in this component's own conversation -- see
+#: `LLMComponent.memory_block`.
+_SHARED_MEMORY_NOTE = (
+    "Your utility function, the outcome space, and this negotiation's setup "
+    "are included in the message below, under 'Negotiation memory'. A recap "
+    "of recent turns is included there too."
+)
 
 
 # ``slots=False`` is required: ``GBComponent`` is itself a slotted attrs class,
@@ -109,17 +198,81 @@ class LLMComponent:
             of guess. Set False for a provider/model that does not handle
             tool-calling reliably. Requires ``self.negotiator.ufun`` to be set
             to have any effect.
+        memory_mode: One of three strategies for how this component learns
+            the negotiation's setup (NMI, outcome space, own utility
+            function/reserved value, opponent's utility function when known)
+            and history, and how much that costs in extra LLM calls/tokens:
+
+            - ``"none"``: today's original behavior. A fresh, memoryless
+              ``[system, user]`` completion on every call, with the plain
+              ``system_prompt`` and nothing else. Cheapest; use to isolate
+              what memory/role-awareness contributes, or for a provider/model
+              that should not pay for either.
+            - ``"conversation"`` (the default): this component keeps its own
+              persistent chat across the whole negotiation, mirroring
+              `~negmas_llm.negotiator.LLMNegotiator` -- on the first call (or
+              sooner, via `on_preferences_changed`), it is told the setup
+              using the exact same
+              `~negmas_llm.negotiator.DEFAULT_PREFERENCES_PROMPT` template and
+              tag renderer `LLMNegotiator` itself uses; that exchange, and
+              every call since, then stays in this component's own growing
+              conversation, so the model has the whole history of its own
+              role for free and does not need it repeated. Most complete, and
+              the most tokens: the conversation grows every call, for the
+              life of the negotiation (see ``summarize_every`` to bound that).
+            - ``"shared"``: a middle ground. The setup is rendered once and
+              cached on the *negotiator* (`~negmas_llm.pablove.PABLOveNegotiator.memory`),
+              not replayed into each component's own chat; every call is
+              still a single fresh exchange (as in ``"none"``), but the user
+              message is prefixed with that cached setup block plus a bounded
+              recap of recent turns (`history_turns`), pulled fresh each
+              time rather than accumulated. Gives every component the same
+              setup information as ``"conversation"`` without the
+              linearly-growing per-component chat.
+
+            Every mode still gets the team-role briefing (see
+            :func:`_team_briefing`) in its system prompt, except ``"none"``.
+        use_ufun_tools: If True, offer the LLM function tools that compute the
+            negotiator's own utility function in-process (evaluate an outcome,
+            min/max, best/worst, and the inverter operations -- see
+            :mod:`negmas_llm.ufun_tools`), instead of leaving it to estimate
+            utilities from the serialized prompt alone. Default is True: an
+            LLM reasoning about its own utility function from the prompt text
+            is prone to misreading it (e.g. defaulting to a "larger number is
+            better" prior on an ordinal-looking issue whose mapping actually
+            runs the other way), and the tool gives it a way to check instead
+            of guess. Set False for a provider/model that does not handle
+            tool-calling reliably. Requires ``self.negotiator.ufun`` to be set
+            to have any effect.
         llm_kwargs: Extra keyword arguments for ``litellm.completion``.
         text_limit: Max characters of a quoted partner utterance (current-turn
             or from history) before it is truncated with an ellipsis. Bounds
             prompt growth from long or adversarial messages.
         history_turns: How many past turns :func:`_history_lines` includes
-            (subclasses that render turn history only).
+            (subclasses that render turn history only; also the recap size in
+            ``"shared"`` mode).
         history_offers: How many past partner offers a component keeps in its
             own running memory (e.g. `LLMUFunModel`'s belief update).
         domain_values_limit: Max allowed values listed per issue when
             describing the domain (subclasses that describe the domain only).
+        summarize_every: In ``"conversation"`` mode, once this component's own
+            conversation holds more than this many exchanges (user/assistant
+            pairs -- one per call, so this is a round count, not a wall-clock
+            or byte-size trigger), everything older than the most recent
+            ``summarize_keep`` exchanges is collapsed into one LLM-generated
+            summary message. The check re-fires as the conversation grows
+            past the threshold again, so this is a recurring cadence, not a
+            one-time cutoff. ``None`` (default) disables summarization
+            entirely -- the conversation grows for the life of the
+            negotiation. See :mod:`negmas_llm.summarize`.
+        summarize_keep: How many of the most recent exchanges stay verbatim
+            (never summarized) each time summarization runs.
     """
+
+    #: This component's role name, one of `_TEAM_ORDER`. Overridden per
+    #: built-in subclass; a custom component that does not set it just gets a
+    #: generic mention in its own team briefing.
+    _role: ClassVar[str] = "component"
 
     provider: str | None = field(default=None, kw_only=True)
     model: str | None = field(default=None, kw_only=True)
@@ -133,13 +286,18 @@ class LLMComponent:
     num_retries: int | None = field(default=None, kw_only=True)
     verbose: bool = field(default=False, kw_only=True)
     use_ufun_tools: bool = field(default=True, kw_only=True)
+    memory_mode: str = field(default="conversation", kw_only=True)
     llm_kwargs: dict[str, Any] = field(factory=dict, kw_only=True)
     text_limit: int = field(default=120, kw_only=True)
     history_turns: int = field(default=6, kw_only=True)
     history_offers: int = field(default=8, kw_only=True)
     domain_values_limit: int = field(default=12, kw_only=True)
+    summarize_every: int | None = field(default=None, kw_only=True)
+    summarize_keep: int = field(default=3, kw_only=True)
     token_usage: TokenUsage = field(factory=TokenUsage, init=False)
     _resolved: Any = field(default=None, init=False)
+    _conversation_history: list[dict[str, str]] = field(factory=list, init=False)
+    _preferences_sent: bool = field(default=False, init=False)
 
     def _config(self):
         """Resolve (and cache) this component's LLM configuration."""
@@ -165,33 +323,106 @@ class LLMComponent:
         """Approximate word budget for generated text."""
         return resolve_max_words(self._config().max_words)
 
-    def call_llm(self, system: str, user: str) -> str:
-        """Send one system/user exchange and return the raw response text.
+    def build_system(self) -> str:
+        """This component's full system prompt for the next call.
 
-        When :attr:`use_ufun_tools` is set and this component is attached to a
-        negotiator with a ufun, the model is offered the utility-function tools
-        (see :mod:`negmas_llm.ufun_tools`) and the exchange loops -- executing
-        any requested tool calls in-process and feeding results back -- until
-        the model gives a final, non-tool-call answer or :data:`MAX_TOOL_ROUNDS`
-        is reached.
+        In ``"conversation"``/``"shared"`` modes: the team briefing, then
+        this component's own task instructions (``system_prompt``), then a
+        memory pointer (worded for whichever of the two modes this is), then
+        the word budget. In ``"none"`` mode: just ``system_prompt`` and the
+        word budget -- unchanged from before ``memory_mode`` existed.
 
-        Args:
-            system: The system prompt.
-            user: The user message.
+        The single place every component -- built-in or a project's own
+        subclass -- assembles its system message, so a subclass that calls
+        this instead of building the string itself picks up every mode for
+        free.
+        """
+        base = getattr(self, "system_prompt", "")
+        limit = word_limit_instruction(self.word_budget)
+        if self.memory_mode == "none":
+            parts = [base]
+        elif self.memory_mode == "shared":
+            parts = [_team_briefing(self._role), base, _SHARED_MEMORY_NOTE]
+        else:
+            parts = [_team_briefing(self._role), base, _CONVERSATION_MEMORY_NOTE]
+        if limit:
+            parts.append(limit)
+        return "\n\n".join(p for p in parts if p)
+
+    def memory_block(self) -> str:
+        """The negotiator's cached setup block, in ``"shared"`` mode only.
+
+        Empty string in every other mode, so a component can unconditionally
+        prepend this to its user message with no branching of its own -- see
+        e.g. :meth:`LLMOffering.__call__`.
+        """
+        if self.memory_mode != "shared":
+            return ""
+        negotiator = getattr(self, "negotiator", None)
+        return getattr(negotiator, "memory", "") or ""
+
+    def on_preferences_changed(self, changes: list[PreferencesChange]) -> None:
+        """Seed (or update) this component's persistent chat with negotiation memory.
+
+        A no-op outside ``"conversation"`` mode (``"shared"`` mode's setup
+        block lives on the negotiator instead -- see
+        `~negmas_llm.pablove.PABLOveNegotiator.on_preferences_changed` --
+        and ``"none"`` mode has no memory at all). Otherwise mirrors
+        `~negmas_llm.negotiator.LLMNegotiator.on_preferences_changed` exactly:
+        the same `~negmas_llm.negotiator.DEFAULT_PREFERENCES_PROMPT` /
+        `~negmas_llm.negotiator.DEFAULT_PREFERENCES_CHANGED_PROMPT` templates,
+        rendered by the same tag processor
+        (`negmas_llm.tags.process_prompt`) against the attached negotiator --
+        so every LLM-backed component, not just a monolithic
+        :class:`~negmas_llm.negotiator.LLMNegotiator`, is told the NMI,
+        outcome space, its own utility function and reserved value, and the
+        opponent's utility function when known, once, persisted for the rest
+        of the negotiation. This is a real ``call_llm`` (the model
+        acknowledges it), so it costs one extra call per conversational
+        component the first time preferences are (or become) known -- a
+        fixed, one-time cost per negotiation, not a per-turn one.
+
+        Called automatically by negmas for every attached component when
+        preferences are set or change; also invoked lazily from
+        :meth:`call_llm` as a safety net, so a component is never asked to
+        decide something before its memory is seeded.
+        """
+        if self.memory_mode != "conversation":
+            return
+        negotiator = getattr(self, "negotiator", None)
+        if negotiator is None or getattr(negotiator, "ufun", None) is None:
+            return
+        is_first = not self._preferences_sent
+        self._preferences_sent = True
+        if is_first:
+            template = DEFAULT_PREFERENCES_PROMPT
+        else:
+            change_types = ", ".join(c.type.name for c in changes) or "unspecified"
+            template = DEFAULT_PREFERENCES_CHANGED_PROMPT.format(
+                change_types=change_types
+            )
+        message = process_prompt(template, negotiator, None)
+        self.call_llm(self.build_system(), message)
+
+    def on_negotiation_start(self, state: Any) -> None:
+        """Reset this component's chat for a fresh negotiation."""
+        self._conversation_history = []
+        self._preferences_sent = False
+
+    def _prepare_call(self) -> tuple[Any, dict[str, Any], Any, bool]:
+        """Resolve everything one completion needs except ``messages``.
+
+        Shared by :meth:`call_llm` and the summarizer's own one-off call, so
+        model/sampling/auth resolution lives in exactly one place.
 
         Returns:
-            The model's text response (empty string if it returned none).
+            ``(cfg, kwargs, ufun, tools_enabled)``.
         """
         cfg = self._config()
         ufun = getattr(getattr(self, "negotiator", None), "ufun", None)
         tools_enabled = self.use_ufun_tools and ufun is not None
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ]
         kwargs: dict[str, Any] = {
             "model": litellm_model_string(cfg.provider, cfg.model),
-            "messages": messages,
             **self.llm_kwargs,
         }
         apply_temperature(kwargs, cfg.provider, cfg.model, cfg.temperature)
@@ -205,8 +436,49 @@ class LLMComponent:
             kwargs["timeout"] = cfg.timeout
         if cfg.num_retries is not None:
             kwargs["num_retries"] = cfg.num_retries
-        if tools_enabled:
-            kwargs["tools"] = UFUN_TOOL_SPECS
+        return cfg, kwargs, ufun, tools_enabled
+
+    def call_llm(self, system: str, user: str) -> str:
+        """Send one system/user exchange and return the raw response text.
+
+        In ``"conversation"`` mode (the default -- see :attr:`memory_mode`):
+        lazily seeds this component's memory via
+        :meth:`on_preferences_changed` if that has not happened yet, then
+        sends ``[system] + this component's own conversation so far + [user]``
+        and appends the ``user``/assistant pair to that conversation for next
+        time -- exactly the persisted-history pattern
+        `~negmas_llm.negotiator.LLMNegotiator._send_to_llm` uses, just scoped
+        to one component's own role instead of one whole negotiator. If
+        :attr:`summarize_every` is set, the conversation is collapsed once it
+        grows past that many exchanges (see :mod:`negmas_llm.summarize`). In
+        ``"none"``/``"shared"`` modes: a single fresh ``[system, user]``
+        exchange every time, as before ``memory_mode`` existed.
+
+        When :attr:`use_ufun_tools` is set and this component is attached to a
+        negotiator with a ufun, the model is offered the utility-function tools
+        (see :mod:`negmas_llm.ufun_tools`) and the exchange loops -- executing
+        any requested tool calls in-process and feeding results back -- until
+        the model gives a final, non-tool-call answer or ``MAX_TOOL_ROUNDS``
+        is reached. Tool round trips are never persisted into the
+        conversation; only the final ``user``/assistant pair is.
+
+        Args:
+            system: The system prompt.
+            user: The user message.
+
+        Returns:
+            The model's text response (empty string if it returned none).
+        """
+        conversational = self.memory_mode == "conversation"
+        if conversational and not self._preferences_sent:
+            self.on_preferences_changed([])
+        cfg, kwargs, ufun, tools_enabled = self._prepare_call()
+        history = self._conversation_history if conversational else []
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system},
+            *history,
+            {"role": "user", "content": user},
+        ]
 
         def _log_tool_call(name: str, arguments: str, result: Any) -> None:
             if self.verbose:
@@ -215,34 +487,36 @@ class LLMComponent:
                 )
 
         start = time.perf_counter()
-        text = ""
-        for _round in range(MAX_TOOL_ROUNDS + 1):
-            call_start = time.perf_counter()
-            response = litellm.completion(**kwargs)
-            self.token_usage.add(response, seconds=time.perf_counter() - call_start)
-            # Read structurally rather than by isinstance: litellm returns
-            # several response types across providers, and an over-strict
-            # check would silently yield an empty string instead of the
-            # model's answer.
-            try:
-                message = response.choices[0].message  # type: ignore[index,union-attr]
-            except (AttributeError, IndexError, TypeError):
-                break
-            tool_calls = getattr(message, "tool_calls", None) if tools_enabled else None
-            if tool_calls:
-                messages.append(assistant_tool_call_entry(message, tool_calls))
-                messages.extend(
-                    tool_result_messages(tool_calls, ufun, on_call=_log_tool_call)
-                )
-                continue
-            text = message.content or ""
-            break
+        text = run_llm_call(
+            kwargs, messages, ufun, tools_enabled, self.token_usage, _log_tool_call
+        )
         elapsed = time.perf_counter() - start
         if self.verbose:
             print(
                 f"[{type(self).__name__} {cfg.provider}/{cfg.model} "
                 f"{elapsed:.1f}s]\n  << {user[-300:]}\n  >> {text[:300]}"
             )
+        if conversational:
+            self._conversation_history.append({"role": "user", "content": user})
+            self._conversation_history.append({"role": "assistant", "content": text})
+            if self.summarize_every:
+
+                def _raw_call(s: str, u: str) -> str:
+                    _, raw_kwargs, _, _ = self._prepare_call()
+                    raw_messages = [
+                        {"role": "system", "content": s},
+                        {"role": "user", "content": u},
+                    ]
+                    return run_llm_call(
+                        raw_kwargs, raw_messages, None, False, self.token_usage
+                    )
+
+                self._conversation_history = maybe_summarize(
+                    self._conversation_history,
+                    every=self.summarize_every,
+                    keep=self.summarize_keep,
+                    raw_call=_raw_call,
+                )
         return text
 
     @staticmethod
@@ -336,17 +610,22 @@ class LLMLanguage(LLMComponent, Language):
             the prompt (elicited priorities, chosen speech acts, and so on).
     """
 
+    _role: ClassVar[str] = "Language"
     system_prompt: str = DEFAULT_LANGUAGE_PROMPT
     describe: Any = field(default=None)
 
     def _system(self) -> str:
-        limit = word_limit_instruction(self.word_budget)
-        return f"{self.system_prompt}\n{limit}" if limit else self.system_prompt
+        """Kept for external subclasses (e.g. ``ActRealization``) that call
+        it directly; delegates to :meth:`build_system` for every mode."""
+        return self.build_system()
 
     def _user(self, ctx: TurnContext) -> str:
         from negmas.sao import ResponseType
 
-        parts = [time_status(ctx.step, ctx.relative_time, ctx.n_steps, ctx.time_limit)]
+        parts = [
+            self.memory_block(),
+            time_status(ctx.step, ctx.relative_time, ctx.n_steps, ctx.time_limit),
+        ]
         text = _partner_text(ctx)
         if text:
             parts.append(f'They said: "{_truncate(text, self.text_limit)}"')
@@ -365,7 +644,7 @@ class LLMLanguage(LLMComponent, Language):
             extra = self.describe(ctx)
             if extra:
                 parts.append(str(extra))
-        return "\n".join(parts)
+        return "\n".join(p for p in parts if p)
 
     def realize(self, ctx: TurnContext) -> Utterance:
         """Generate the utterance for this turn's decision."""
@@ -406,6 +685,7 @@ class LLMPerception(LLMComponent, Perception):
         acts_key: Key under which a partner may publish its own typed acts.
     """
 
+    _role: ClassVar[str] = "Perception"
     system_prompt: str = DEFAULT_PERCEPTION_PROMPT
     acts_key: str = "act"
 
@@ -442,8 +722,8 @@ class LLMPerception(LLMComponent, Perception):
         if not text:
             return PerceptionResult(source="none")
         raw = self.call_llm(
-            self.system_prompt,
-            f"{_time_status(ctx)}\n"
+            self.build_system(),
+            f"{self.memory_block()}{_time_status(ctx)}\n"
             f'Their message: "{text}"\nTheir offer: {ctx.their_offer}',
         )
         data = self.parse_json(raw)
@@ -680,6 +960,7 @@ class LLMOffering(LLMComponent, OfferingPolicy):
             our best outcome; ``"none"`` returns ``None``.
     """
 
+    _role: ClassVar[str] = "Bidding"
     system_prompt: str = DEFAULT_OFFERING_PROMPT
     enforce_rationality: bool = True
     fallback: str = "aspiration"
@@ -736,9 +1017,9 @@ class LLMOffering(LLMComponent, OfferingPolicy):
         """Ask the model for an offer, then make sure it is one."""
         ctx = getattr(self.negotiator, "turn", None)
         self.stats["calls"] += 1
-        limit = word_limit_instruction(self.word_budget)
-        system = f"{self.system_prompt}\n{limit}" if limit else self.system_prompt
+        system = self.build_system()
         parts = [
+            self.memory_block(),
             _describe_domain(self.negotiator, max_values=self.domain_values_limit),
             _time_status(ctx, state),
         ]
@@ -799,6 +1080,7 @@ class LLMAcceptance(LLMComponent, AcceptancePolicy):
         enforce_rationality: Veto irrational accepts (default ``True``).
     """
 
+    _role: ClassVar[str] = "Acceptance"
     system_prompt: str = DEFAULT_ACCEPTANCE_PROMPT
     enforce_rationality: bool = True
     stats: dict[str, int] = field(factory=lambda: {"calls": 0, "vetoed": 0})
@@ -818,9 +1100,9 @@ class LLMAcceptance(LLMComponent, AcceptancePolicy):
 
         self.stats["calls"] += 1
         ctx = getattr(self.negotiator, "turn", None)
-        limit = word_limit_instruction(self.word_budget)
-        system = f"{self.system_prompt}\n{limit}" if limit else self.system_prompt
+        system = self.build_system()
         parts = [
+            self.memory_block(),
             _time_status(ctx, state),
             f"Their offer: {offer}"
             + (
@@ -890,6 +1172,7 @@ class LLMUFunModel(LLMComponent, UFunModel):
         refresh_every: Re-estimate after this many new partner offers.
     """
 
+    _role: ClassVar[str] = "Opponent model"
     system_prompt: str = DEFAULT_UFUN_MODEL_PROMPT
     refresh_every: int = 3
     weights: dict[str, float] = field(factory=dict)
@@ -925,6 +1208,7 @@ class LLMUFunModel(LLMComponent, UFunModel):
         """One LLM call to refresh the belief; failures leave it unchanged."""
         ctx = getattr(self.negotiator, "turn", None)
         parts = [
+            self.memory_block(),
             _describe_domain(self.negotiator, max_values=self.domain_values_limit),
             _time_status(ctx),
         ]
@@ -939,7 +1223,7 @@ class LLMUFunModel(LLMComponent, UFunModel):
                     f'They most recently said: "{_truncate(text, self.text_limit)}"'
                 )
         data = self.parse_json(
-            self.call_llm(self.system_prompt, "\n".join(p for p in parts if p))
+            self.call_llm(self.build_system(), "\n".join(p for p in parts if p))
         )
         weights = data.get("weights")
         values = data.get("values")
@@ -996,6 +1280,7 @@ class LLMValidation(LLMComponent, Validation):
         system_prompt: Override the checking instructions.
     """
 
+    _role: ClassVar[str] = "Validation"
     system_prompt: str = DEFAULT_VALIDATION_PROMPT
     stats: dict[str, int] = field(factory=lambda: {"checked": 0, "inconsistent": 0})
 
@@ -1017,8 +1302,8 @@ class LLMValidation(LLMComponent, Validation):
             action = f"rejecting {ctx.their_offer}"
         data = self.parse_json(
             self.call_llm(
-                self.system_prompt,
-                f"{_time_status(ctx)}\n"
+                self.build_system(),
+                f"{self.memory_block()}{_time_status(ctx)}\n"
                 f'The action being taken: {action}.\nThe message: "{utterance.text}"',
             )
         )
@@ -1063,6 +1348,7 @@ class LLMEnding(LLMComponent, Ending):
         min_time: Relative time before which ending is not even considered.
     """
 
+    _role: ClassVar[str] = "Ending"
     system_prompt: str = DEFAULT_ENDING_PROMPT
     min_time: float = 0.5
     stats: dict[str, int] = field(factory=lambda: {"asked": 0, "ended": 0, "vetoed": 0})
@@ -1083,8 +1369,8 @@ class LLMEnding(LLMComponent, Ending):
         text = _partner_text(ctx)
         data = self.parse_json(
             self.call_llm(
-                self.system_prompt,
-                f"{_time_status(ctx)}\n"
+                self.build_system(),
+                f"{self.memory_block()}{_time_status(ctx)}\n"
                 f"Their offer: {ctx.their_offer}"
                 + (
                     f" (worth {utility:.2f}; your reserved value is {reserved:.2f})"

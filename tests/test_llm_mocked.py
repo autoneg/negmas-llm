@@ -274,7 +274,7 @@ class TestLLMNegotiatorInitialization:
             mock_response.choices = [MagicMock()]
             mock_response.choices[0].message.content = "{}"
             with patch(
-                "negmas_llm.negotiator.litellm.completion",
+                "negmas_llm.ufun_tools.litellm.completion",
                 return_value=mock_response,
             ) as mock:
                 negotiator._call_llm([{"role": "user", "content": "hi"}])

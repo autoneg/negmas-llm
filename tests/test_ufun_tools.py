@@ -183,7 +183,7 @@ class TestLLMNegotiatorToolLoop:
             model="test-model", name="t", ufun=negotiation_ufun, use_ufun_tools=False
         )
         with patch(
-            "negmas_llm.negotiator.litellm.completion",
+            "negmas_llm.ufun_tools.litellm.completion",
             return_value=_final_response("{}"),
         ) as mock:
             negotiator._call_llm([{"role": "user", "content": "hi"}])
@@ -199,7 +199,7 @@ class TestLLMNegotiatorToolLoop:
             _final_response('{"response_type": "reject", "outcome": null}'),
         ]
         with patch(
-            "negmas_llm.negotiator.litellm.completion", side_effect=responses
+            "negmas_llm.ufun_tools.litellm.completion", side_effect=responses
         ) as mock:
             result = negotiator._call_llm(
                 [{"role": "user", "content": "decide"}], require_json=True
@@ -227,7 +227,7 @@ class TestLLMNegotiatorToolLoop:
             [_make_tool_call("call_x", "utility_max", {})]
         )
         with patch(
-            "negmas_llm.negotiator.litellm.completion",
+            "negmas_llm.ufun_tools.litellm.completion",
             return_value=infinite_tool_calls,
         ) as mock:
             result = negotiator._call_llm([{"role": "user", "content": "decide"}])
@@ -243,7 +243,7 @@ class TestLLMNegotiatorToolLoop:
         )
         assert negotiator.ufun is None
         with patch(
-            "negmas_llm.negotiator.litellm.completion",
+            "negmas_llm.ufun_tools.litellm.completion",
             return_value=_final_response("{}"),
         ) as mock:
             negotiator._call_llm([{"role": "user", "content": "hi"}])
@@ -301,7 +301,7 @@ class TestLLMMetaNegotiatorToolLoop:
         assert wrapper.ufun is not None
 
         with patch(
-            "negmas_llm.meta.litellm.completion",
+            "negmas_llm.ufun_tools.litellm.completion",
             return_value=_final_response('{"text": "hi"}'),
         ) as mock:
             mechanism.step()
@@ -333,7 +333,9 @@ class TestLLMMetaNegotiatorToolLoop:
             _tool_call_response([tool_call]),
             _final_response('{"text": "hello"}'),
         ]
-        with patch("negmas_llm.meta.litellm.completion", side_effect=responses) as mock:
+        with patch(
+            "negmas_llm.ufun_tools.litellm.completion", side_effect=responses
+        ) as mock:
             result = meta._call_llm(
                 [
                     {"role": "system", "content": "sys"},
@@ -350,7 +352,7 @@ class TestLLMMetaNegotiatorToolLoop:
             base_negotiator=base, provider="ollama", model="test-model"
         )
         with patch(
-            "negmas_llm.meta.litellm.completion",
+            "negmas_llm.ufun_tools.litellm.completion",
             return_value=_final_response('{"text": "hi"}'),
         ) as mock:
             meta._call_llm([{"role": "user", "content": "go"}])

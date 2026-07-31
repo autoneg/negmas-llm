@@ -45,12 +45,18 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from attrs import define
-from negmas.common import MechanismState
+from negmas.common import MechanismState, PreferencesChange
 from negmas.gb.common import ExtendedResponseType, GBState
 from negmas.gb.components import AcceptancePolicy, GBComponent, Model, OfferingPolicy
 from negmas.gb.negotiators.modular.mapneg import MAPNegotiator
 from negmas.outcomes import ExtendedOutcome, Outcome
 from negmas.sao import ResponseType
+
+from negmas_llm.negotiator import (
+    DEFAULT_PREFERENCES_CHANGED_PROMPT,
+    DEFAULT_PREFERENCES_PROMPT,
+)
+from negmas_llm.tags import process_prompt
 
 if TYPE_CHECKING:
     pass
@@ -356,6 +362,17 @@ class PABLOveNegotiator(MAPNegotiator):
             safe empty utterance, ``"log"`` records and sends anyway.
         max_revalidations: Cap on regeneration attempts; unbounded would loop.
         acceptance_first: Run order of acceptance and offering (BOA, unchanged).
+        memory_mode: When given, uniformly overrides ``memory_mode`` on every
+            attached :class:`~negmas_llm.pablove_components.LLMComponent` --
+            ``"none"`` (today's original stateless behavior), ``"conversation"``
+            (each component keeps its own persistent chat -- the default a
+            component picks for itself if this stays ``None``), or ``"shared"``
+            (a single setup block cached here on the negotiator -- see
+            :attr:`memory`, :meth:`on_preferences_changed` -- and a bounded
+            recap pulled fresh into each component's call, rather than a
+            per-component growing chat). ``None`` (default) leaves each
+            component's own setting untouched, so a mix of modes across
+            components is possible when built explicitly.
         **kwargs: Forwarded to ``MAPNegotiator``.
 
     Remarks:
@@ -390,6 +407,7 @@ class PABLOveNegotiator(MAPNegotiator):
         acceptance_first: bool = True,
         extra_components: list[GBComponent] | None = None,
         extra_component_names: list[str] | None = None,
+        memory_mode: Literal["none", "conversation", "shared"] | None = None,
         **kwargs,
     ):
         extra = list(extra_components) if extra_components else []
@@ -428,6 +446,9 @@ class PABLOveNegotiator(MAPNegotiator):
         #: Rescued in `respond_`, read in `respond`: see that method.
         self._pending_their_offer: Outcome | None = None
         self._pending_their_data: dict[str, Any] | None = None
+        #: Cached "shared" mode setup block; see :attr:`memory`. Unused by
+        #: components in "none"/"conversation" mode.
+        self._memory_text: str | None = None
 
         super().__init__(
             *args,
@@ -440,6 +461,10 @@ class PABLOveNegotiator(MAPNegotiator):
             acceptance_first=acceptance_first,
             **kwargs,
         )
+        if memory_mode is not None:
+            for comp in self._components:
+                if hasattr(comp, "memory_mode"):
+                    comp.memory_mode = memory_mode
 
     # -- context ----------------------------------------------------------
 
@@ -679,16 +704,56 @@ class PABLOveNegotiator(MAPNegotiator):
             return response
         return ExtendedResponseType(response=response, data=data)
 
+    # -- "shared" memory-mode setup block ----------------------------------
+
+    @property
+    def memory(self) -> str:
+        """The cached "shared" mode setup block: NMI, outcome space, own
+        utility function/reserved value, and the opponent's utility function
+        when known.
+
+        Rendered once, from `~negmas_llm.negotiator.DEFAULT_PREFERENCES_PROMPT`
+        via the same `negmas_llm.tags.process_prompt` renderer
+        `~negmas_llm.negotiator.LLMNegotiator` uses for the same content, so
+        this is genuinely the same information, not a re-derived copy. Empty
+        until preferences are known (see :meth:`on_preferences_changed`); no
+        component *requires* this to be non-empty -- ``"shared"`` mode
+        components degrade to an empty block, same as no memory at all.
+        """
+        return self._memory_text or ""
+
+    def _refresh_memory(self, changes: list[PreferencesChange] | None) -> None:
+        if self.ufun is None:
+            return
+        if changes:
+            change_types = ", ".join(c.type.name for c in changes) or "unspecified"
+            template = DEFAULT_PREFERENCES_CHANGED_PROMPT.format(
+                change_types=change_types
+            )
+        else:
+            template = DEFAULT_PREFERENCES_PROMPT
+        self._memory_text = process_prompt(template, self, None)
+
     # -- lifecycle --------------------------------------------------------
 
+    def on_preferences_changed(self, changes: list[PreferencesChange]) -> None:
+        """Dispatch to every component (base behavior), then refresh :attr:`memory`."""
+        was_known = self._memory_text is not None
+        super().on_preferences_changed(changes)
+        self._refresh_memory(changes if was_known else None)
+
     def on_negotiation_start(self, state: MechanismState) -> None:
-        """Reset the turn log."""
+        """Reset the turn log, and make sure :attr:`memory` reflects the
+        final NMI/outcome space now that this negotiator has joined a
+        mechanism -- `on_preferences_changed` may have run before that, when
+        NMI-dependent tags had nothing to render yet."""
         super().on_negotiation_start(state)
         self._turns = []
         self._turn = None
         self.shared = {}
         self._pending_their_offer = None
         self._pending_their_data = None
+        self._refresh_memory(None)
 
 
 def make_pablove(

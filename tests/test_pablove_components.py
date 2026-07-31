@@ -125,7 +125,7 @@ def test_llm_language_uses_one_call_per_turn_and_cannot_change_the_offer(domain)
     neg = make_pablove(
         acceptance=AcceptTop(0),
         offering=TimeBasedOfferingPolicy(),
-        language=LLMLanguage(),
+        language=LLMLanguage(memory_mode="none"),
         ufun=u1,
     )
     with patch(
@@ -567,7 +567,7 @@ def test_ufun_tool_round_trip(domain):
     model's final answer is returned.
     """
     _, u1, _ = domain
-    offering = LLMOffering()
+    offering = LLMOffering(memory_mode="none")
     make_pablove(acceptance=AcceptTop(0), offering=offering, ufun=u1)
     tool_call = _make_tool_call("call_1", "utility_max", {})
     final = json.dumps({"outcome": [100, 1]})
@@ -588,7 +588,7 @@ def test_ufun_tool_round_trip(domain):
 def test_ufun_tool_loop_terminates_at_max_rounds(domain):
     """A model that never stops calling tools does not hang the negotiation."""
     _, u1, _ = domain
-    offering = LLMOffering()
+    offering = LLMOffering(memory_mode="none")
     make_pablove(acceptance=AcceptTop(0), offering=offering, ufun=u1)
     infinite_tool_calls = _tool_call_response(
         [_make_tool_call("call_x", "utility_max", {})]
@@ -889,3 +889,158 @@ def test_history_offers_limits_the_ufun_models_own_memory(domain):
     prompt = _prompt_text(seen)
     assert "(190, 2)" in prompt and "(200, 1)" in prompt
     assert "(100, 1)" not in prompt and "(175, 1)" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# memory_mode: "none" (legacy/stateless) vs "conversation" (chat continuity
+# + preferences seeding + team-role briefing)
+# ---------------------------------------------------------------------------
+
+
+def test_none_mode_is_stateless_with_no_seeding_call(domain):
+    """ "none" is exactly the pre-``memory_mode`` behavior: one fresh
+    [system, user] exchange per call, no seeding, no growing history."""
+    _, u1, _ = domain
+    offering = LLMOffering(memory_mode="none")
+    make_pablove(acceptance=AcceptTop(0), offering=offering, ufun=u1)
+    with patch(
+        "litellm.completion", side_effect=lambda *a, **k: _mock('{"outcome": [150, 2]}')
+    ) as mock:
+        offering.call_llm("system", "user")
+        offering.call_llm("system", "user")
+    assert mock.call_count == 2, "no extra seeding call should ever happen"
+    for call in mock.call_args_list:
+        assert call.kwargs["messages"] == [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "user"},
+        ]
+    assert offering._conversation_history == []
+
+
+def test_conversation_mode_seeds_preferences_once_then_grows_history(domain):
+    """The first call seeds memory (a real, separate call carrying the
+    negotiation setup); every call after that carries the growing
+    conversation, and the seed is never repeated."""
+    _, u1, _ = domain
+    offering = LLMOffering()  # memory_mode="conversation" is the default
+    make_pablove(acceptance=AcceptTop(0), offering=offering, ufun=u1)
+    with patch(
+        "litellm.completion",
+        side_effect=lambda *a, **k: _mock('{"outcome": [150, 2]}'),
+    ) as mock:
+        offering.call_llm("system-1", "first decision")
+        offering.call_llm("system-2", "second decision")
+    assert mock.call_count == 3, "one seeding call, then one call per decision"
+
+    seed_messages = mock.call_args_list[0].kwargs["messages"]
+    assert seed_messages[0]["role"] == "system"
+    seed_user = seed_messages[-1]["content"]
+    assert "utility function" in seed_user.lower()
+    assert "outcome space" in seed_user.lower()
+
+    first_messages = mock.call_args_list[1].kwargs["messages"]
+    assert first_messages[-1]["content"] == "first decision"
+    # The seed exchange is now part of history, ahead of this decision.
+    assert any(m["content"] == seed_user for m in first_messages)
+
+    second_messages = mock.call_args_list[2].kwargs["messages"]
+    assert second_messages[-1]["content"] == "second decision"
+    # By the third call the conversation carries the seed AND the first
+    # decision's exchange -- nothing was dropped, nothing re-seeded.
+    contents = [m["content"] for m in second_messages]
+    assert "first decision" in contents
+    assert seed_user in contents
+    assert contents.count(seed_user) == 1, "seeding must not repeat"
+
+
+def test_conversation_mode_system_prompt_has_team_briefing(domain):
+    """Every conversational component's system prompt names its own role
+    and the rest of the PABLO-ve pipeline -- not just its task instructions."""
+    _, u1, _ = domain
+    offering = LLMOffering()
+    make_pablove(acceptance=AcceptTop(0), offering=offering, ufun=u1)
+    system = offering.build_system()
+    assert "Bidding" in system
+    assert "this is you" in system
+    assert "Language" in system and "Acceptance" in system  # other roles named
+    assert offering.system_prompt in system  # task instructions still present
+
+
+def test_none_mode_system_prompt_has_no_briefing_or_memory_pointer(domain):
+    _, u1, _ = domain
+    offering = LLMOffering(memory_mode="none")
+    make_pablove(acceptance=AcceptTop(0), offering=offering, ufun=u1)
+    system = offering.build_system()
+    assert system.startswith(offering.system_prompt)
+    assert "Bidding" not in system  # no team briefing
+    assert "conversation" not in system.lower()  # no memory pointer
+
+
+def test_negotiator_memory_mode_overrides_every_component(domain):
+    """A negotiator-level ``memory_mode`` uniformly overrides every attached
+    component, without needing to configure each one individually."""
+    os_, u1, _ = domain
+    offering = LLMOffering()
+    acceptance = LLMAcceptance()
+    neg = make_pablove(
+        acceptance=acceptance, offering=offering, ufun=u1, memory_mode="none"
+    )
+    assert offering.memory_mode == "none"
+    assert acceptance.memory_mode == "none"
+    del neg  # constructed only to trigger the override; not otherwise used
+
+
+# ---------------------------------------------------------------------------
+# memory_mode: "shared" -- one cached setup block on the negotiator, pulled
+# fresh into each call, instead of a per-component growing chat.
+# ---------------------------------------------------------------------------
+
+
+def test_shared_mode_negotiator_memory_has_setup_after_negotiation_starts(domain):
+    os_, u1, u2 = domain
+    offering = LLMOffering(memory_mode="shared")
+    neg = make_pablove(acceptance=AcceptTop(0), offering=offering, ufun=u1)
+    assert neg.memory == "", "nothing cached before preferences/NMI are known"
+    with patch(
+        "litellm.completion", side_effect=lambda *a, **k: _mock('{"outcome": [150, 2]}')
+    ):
+        _run(neg, os_, u2, n_steps=2)
+    assert "utility function" in neg.memory.lower()
+    assert "outcome space" in neg.memory.lower()
+    assert "reserved value" in neg.memory.lower()
+
+
+def test_shared_mode_prepends_memory_with_no_growing_history(domain):
+    """Unlike "conversation" mode, "shared" mode makes exactly one call per
+    decision -- no seeding call, no accumulating messages list -- but that
+    one call's user message is still prefixed with the negotiator's cached
+    setup block."""
+    _, u1, _ = domain
+    offering = LLMOffering(memory_mode="shared")
+    neg = make_pablove(acceptance=AcceptTop(0), offering=offering, ufun=u1)
+    neg.on_negotiation_start(MagicMock(step=0))
+    assert neg.memory  # ufun was set at construction, so this is non-empty
+
+    with patch(
+        "litellm.completion",
+        side_effect=lambda *a, **k: _mock('{"outcome": [150, 2]}'),
+    ) as mock:
+        offering.call_llm(offering.build_system(), f"{offering.memory_block()}turn one")
+        offering.call_llm(offering.build_system(), f"{offering.memory_block()}turn two")
+    assert mock.call_count == 2, "no seeding call in shared mode"
+    for call in mock.call_args_list:
+        assert len(call.kwargs["messages"]) == 2, "no growing history in shared mode"
+    first_user = mock.call_args_list[0].kwargs["messages"][-1]["content"]
+    second_user = mock.call_args_list[1].kwargs["messages"][-1]["content"]
+    assert "utility function" in first_user.lower()
+    assert "utility function" in second_user.lower()
+    assert offering._conversation_history == []
+
+
+def test_shared_mode_system_prompt_has_team_briefing_and_shared_note(domain):
+    _, u1, _ = domain
+    offering = LLMOffering(memory_mode="shared")
+    make_pablove(acceptance=AcceptTop(0), offering=offering, ufun=u1)
+    system = offering.build_system()
+    assert "Bidding" in system and "this is you" in system
+    assert "Negotiation memory" in system

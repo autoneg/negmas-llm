@@ -17,15 +17,22 @@ in-process and returns a JSON-able result dict.
 from __future__ import annotations
 
 import json
-from typing import Any
+import time
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
+import litellm
 from negmas.outcomes import Outcome, OutcomeSpace
 from negmas.preferences import BaseUtilityFunction
+
+if TYPE_CHECKING:
+    from negmas_llm.token_usage import TokenUsage
 
 __all__ = [
     "MAX_TOOL_ROUNDS",
     "UFUN_TOOL_SPECS",
     "assistant_tool_call_entry",
+    "run_llm_call",
     "run_ufun_tool",
     "tool_result_messages",
 ]
@@ -342,6 +349,73 @@ def run_ufun_tool(
         return {"error": f"Unknown utility-function tool: {name}"}
     except Exception as e:  # noqa: BLE001 - a broken tool call must not crash
         return {"error": f"{type(e).__name__}: {e}"}
+
+
+def run_llm_call(
+    kwargs: dict[str, Any],
+    messages: list[dict[str, Any]],
+    ufun: BaseUtilityFunction | None,
+    tools_enabled: bool,
+    token_usage: TokenUsage,
+    on_tool_call: Callable[[str, str, Any], None] | None = None,
+) -> str:
+    """Call ``litellm.completion``, transparently draining any ufun tool calls.
+
+    This is the one place every LLM-calling class in this package sends its
+    request and runs the tool loop: :class:`~negmas_llm.negotiator.LLMNegotiator`,
+    :class:`~negmas_llm.meta.LLMMetaNegotiator`, and PABLO-ve's
+    :class:`~negmas_llm.pablove_components.LLMComponent` all delegate here
+    instead of each re-implementing the same loop -- one call.completion loop,
+    kept in one place.
+
+    Loops -- executing any requested tool calls in-process via
+    :func:`run_ufun_tool` and feeding results back into ``messages`` -- until
+    the model gives a final, non-tool-call answer or :data:`MAX_TOOL_ROUNDS` is
+    exhausted. ``messages`` is mutated in place with any tool round-trip
+    entries; the caller decides afterward what (if anything) from this
+    exchange becomes part of a persisted conversation.
+
+    Args:
+        kwargs: Keyword arguments for ``litellm.completion`` (model, sampling
+            params, api_key/base, etc.) *excluding* ``messages`` and ``tools``
+            -- both of those are set here from ``messages``/``tools_enabled``.
+        messages: The full message list for this call (system, any prior
+            conversation, and the new turn). Mutated in place with tool
+            round-trip entries.
+        ufun: The utility function tool calls compute against. Required when
+            ``tools_enabled`` is True.
+        tools_enabled: Whether to offer :data:`UFUN_TOOL_SPECS` and drain tool
+            calls. When False, any ``tool_calls`` on the response are ignored.
+        token_usage: Running totals updated with each ``litellm.completion``
+            call made.
+        on_tool_call: Optional ``(name, arguments, result) -> None`` callback,
+            e.g. for verbose logging.
+
+    Returns:
+        The model's final text response (empty string if it returned none).
+    """
+    call_kwargs = {**kwargs, "messages": messages}
+    if tools_enabled:
+        call_kwargs["tools"] = UFUN_TOOL_SPECS
+    text = ""
+    for _round in range(MAX_TOOL_ROUNDS + 1):
+        call_start = time.perf_counter()
+        response = litellm.completion(**call_kwargs)
+        token_usage.add(response, seconds=time.perf_counter() - call_start)
+        try:
+            message = response.choices[0].message  # type: ignore[union-attr, index]
+        except (AttributeError, IndexError, TypeError):
+            break
+        tool_calls = getattr(message, "tool_calls", None) if tools_enabled else None
+        if tool_calls:
+            messages.append(assistant_tool_call_entry(message, tool_calls))
+            messages.extend(
+                tool_result_messages(tool_calls, ufun, on_call=on_tool_call)  # type: ignore[arg-type]
+            )
+            continue
+        text = message.content or ""
+        break
+    return text
 
 
 def assistant_tool_call_entry(message: Any, tool_calls: Any) -> dict[str, Any]:
