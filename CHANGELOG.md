@@ -32,6 +32,36 @@ and this project adheres (loosely) to [Semantic Versioning](https://semver.org/s
 
 ### Added
 
+- Composable PABLO-ve slots: `Perception`, `Language`, `Validation` and
+  `Ending` components now support `a | b | c`, producing a `PerceptionChain`,
+  `LanguageChain`, `ValidationChain` or `EndingChain` that fills the slot as a
+  single component of that kind. Chaining is kind-checked (`perception |
+  language` raises `TypeError`), flat and associative, and never mutates its
+  operands. Semantics per kind: perceivers all run and their readings are
+  merged (acts/commitments unioned in order, first non-empty wins for
+  single-valued fields, best `source` reported); language components each
+  revise the previous one's draft through `ctx.utterance`; validators must all
+  pass and their rewrites compose; ending components stop when any of them says
+  so (`mode="all"` requires unanimity). A chain is not itself registered with
+  the negotiator -- its leaves are, individually, so each one keeps its own
+  lifecycle callbacks, ufun/NMI sharing and `memory_mode` override.
+- Every PABLO-ve slot (`acceptance`, `offering`, `model`, `perception`,
+  `language`, `validation`, `ending`, on both `PABLOveNegotiator` and
+  `make_pablove`) now accepts a **type**, a **class name**, a
+  `(spec, params)` pair or a **list** of any of those, in addition to a
+  ready-made component -- matching how negmas' own `*_type`/`*_params` pairs
+  work. Each slot gained a matching `*_params` argument (`perception_params`,
+  `language_params`, ...), which takes one dict for all components or one dict
+  per component against a list spec. A list spec builds the same chain `|`
+  would, and `A | B` over *types* (which Python evaluates to a union before it
+  reaches us) is treated the same way, so the two spellings never disagree.
+  New public helpers: `make_component`, `component_leaves`,
+  `resolve_component_type`, and the `ComponentSpec` alias documenting the
+  grammar.
+- `LLMLanguage` now includes any existing draft (`ctx.utterance`) in its prompt
+  and asks the model to improve it, so it works as a later link in a
+  `LanguageChain` without any chain-specific code. A lone `LLMLanguage` always
+  sees `None` there, so its behavior is unchanged.
 - `negmas_llm.common.resolve_ollama_api_base()` helper exposing the same
   `OLLAMA_HOST` resolution rule for reuse by downstream code.
 - Ollama Cloud / Turbo support in `OllamaNegotiator`: when an `api_key` is

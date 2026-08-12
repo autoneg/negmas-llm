@@ -649,6 +649,16 @@ class LLMLanguage(LLMComponent, Language):
             parts.append("You are ENDING the negotiation without agreement.")
         else:
             parts.append(f"You are REJECTING {ctx.their_offer}.")
+        # Only ever set when this component runs inside a `LanguageChain`, as
+        # a later link: the pipeline fills `ctx.utterance` from `realize`'s
+        # return value, so a lone language component always sees `None` here.
+        draft = ctx.utterance
+        if draft is not None and draft.text.strip():
+            parts.append(
+                f'A draft of the message already exists: "{draft.text}"\n'
+                "Improve it and return your version. Keep the decision and the "
+                "terms above exactly as they are."
+            )
         if self.describe is not None:
             extra = self.describe(ctx)
             if extra:
