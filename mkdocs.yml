@@ -72,6 +72,8 @@ nav:
     - Providers: guide/providers.md
     - Environment Variables: guide/environment-variables.md
     - Customization: guide/customization.md
+    - MCP Server: guide/mcp.md
+    - MCP Tutorial: guide/mcp-tutorial.md
   - API Reference:
     - Negotiators: api/negotiators.md
 

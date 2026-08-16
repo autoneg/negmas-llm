@@ -361,6 +361,28 @@ GitHub Copilot uses OAuth device flow - **no Personal Access Token needed**.
 
 5. **Credentials are cached**: Future runs won't require re-authentication
 
+## MCP Server
+
+Expose any registered negmas or negmas-llm negotiator to an MCP client, so an
+LLM can consult a strategy ("what would Boulware counter with here?") or run two
+strategies against each other.
+
+```bash
+pip install 'negmas-llm[mcp]'
+negmas-mcp                                   # stdio
+negmas-mcp --transport streamable-http --port 8000
+```
+
+```json
+{"mcpServers": {"negmas": {"command": "negmas-mcp"}}}
+```
+
+Tools: `list_negotiators`, `describe_negotiator`, `start_negotiation`,
+`counter`, `negotiation_state`, `end_negotiation`, `run_negotiation`. Sessions
+run a real `SAOMechanism`, so time-based strategies concede on a genuine
+schedule. See the [MCP guide](https://negmas-llm.readthedocs.io/en/latest/guide/mcp/)
+and the step-by-step [MCP tutorial](https://negmas-llm.readthedocs.io/en/latest/guide/mcp-tutorial/).
+
 ## Documentation
 
 Full documentation is available at [negmas-llm.readthedocs.io](https://negmas-llm.readthedocs.io/en/latest/).

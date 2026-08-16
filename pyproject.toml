@@ -38,6 +38,12 @@ Issues = "https://github.com/autoneg/negmas-llm/issues"
 dev = [
     "pre-commit>=4.5.1",
 ]
+mcp = [
+    "mcp>=2.0.0",
+]
+
+[project.scripts]
+negmas-mcp = "negmas_llm.mcp.__main__:main"
 
 [build-system]
 requires = ["uv_build>=0.9.5,<0.10.0"]
@@ -81,6 +87,7 @@ markers = [
 
 [dependency-groups]
 dev = [
+    "mcp>=2.0.0",
     "mypy>=1.15.0",
     "pre-commit>=4.0.0",
     "pytest>=9.0.2",

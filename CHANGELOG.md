@@ -7,6 +7,19 @@ and this project adheres (loosely) to [Semantic Versioning](https://semver.org/s
 
 ## [Unreleased]
 
+### Added
+
+- MCP server (`negmas_llm.mcp`, optional `[mcp]` extra, `negmas-mcp` entry point)
+  exposing any registered negmas or negmas-llm negotiator to an MCP client.
+  Tools: `list_negotiators`, `describe_negotiator`, `start_negotiation`,
+  `counter`, `negotiation_state`, `end_negotiation`, `run_negotiation`. Sessions
+  run a real `SAOMechanism` with the caller driving one side, so time-based
+  strategies concede on a genuine schedule rather than against a synthesized
+  state. Serves stdio and streamable-http. This is the mirror of
+  `negmas_llm.ufun_tools`: there the negotiator's LLM calls tools, here the
+  negotiator *is* the tool. Documented in `docs/guide/mcp.md` with a worked
+  step-by-step walkthrough in `docs/guide/mcp-tutorial.md`.
+
 ### Changed
 
 - `use_ufun_tools` now defaults to `True` for `LLMNegotiator`, `LLMMetaNegotiator`
