@@ -27,6 +27,7 @@ from rich.table import Table
 from negmas_llm.common import (
     apply_effort,
     apply_max_tokens,
+    apply_seed,
     apply_temperature,
     litellm_model_string,
     resolve_max_words,
@@ -720,6 +721,7 @@ class LLMNegotiator(SAOCallNegotiator, ABC):
             max_tokens if max_tokens is not None else cfg.max_tokens,
         )
         apply_effort(kwargs, cfg.effort)
+        apply_seed(kwargs, cfg.provider, cfg.model)
 
         if cfg.api_key:
             kwargs["api_key"] = cfg.api_key

@@ -13,6 +13,7 @@ from negmas_llm.common import (
     DEFAULT_MAX_WORDS,
     DEFAULT_TEMPERATURE,
     apply_max_tokens,
+    apply_seed,
     apply_temperature,
     default_max_tokens,
     default_max_words,
@@ -155,3 +156,71 @@ def test_env_overrides(monkeypatch):
     assert default_max_tokens("ollama", "qwen3:4b-instruct") == 333
     assert default_max_tokens("ollama", "deepseek-v4-flash") == 333
     assert default_temperature("ollama", "qwen3:4b-instruct") == 0.11
+
+
+# =============================================================================
+# Sampling seed (negmas's global NEGMAS_RAND_SEED switch)
+# =============================================================================
+
+
+def _seeded(monkeypatch, seed):
+    """Pretend negmas's global seed is ``seed`` (None = nothing was seeded)."""
+    monkeypatch.setattr("negmas_llm.common.get_seed", lambda: seed)
+
+
+def test_no_seed_sends_nothing(monkeypatch):
+    # The default -- no NEGMAS_RAND_SEED -- must leave requests untouched.
+    _seeded(monkeypatch, None)
+    k = {}
+    apply_seed(k, "openai", "gpt-4o")
+    assert k == {}
+
+
+def test_seed_is_sent_to_providers_that_accept_it(monkeypatch):
+    _seeded(monkeypatch, 42)
+    k = {}
+    apply_seed(k, "openai", "gpt-4o")
+    assert k == {"seed": 42}
+
+
+def test_seed_is_withheld_from_providers_that_reject_it(monkeypatch):
+    # Anthropic has no sampling seed; sending one would turn a working call
+    # into a provider error for a seed set for an unrelated purpose.
+    _seeded(monkeypatch, 42)
+    k = {}
+    apply_seed(k, "anthropic", "claude-sonnet-4-20250514")
+    assert k == {}
+
+
+def test_explicit_seed_wins(monkeypatch):
+    _seeded(monkeypatch, 42)
+    k = {"seed": 7}
+    apply_seed(k, "openai", "gpt-4o")
+    assert k == {"seed": 7}
+
+
+def test_unknown_provider_is_harmless(monkeypatch):
+    _seeded(monkeypatch, 42)
+    k = {}
+    apply_seed(k, "no-such-provider", "no-such-model")
+    assert k == {}
+
+
+def test_seed_follows_negmas_seed_all(monkeypatch):
+    """End to end against the real negmas switch (skipped on an older negmas)."""
+    import random
+
+    import numpy as np
+
+    rand = pytest.importorskip("negmas.helpers.rand")
+    monkeypatch.setattr("negmas_llm.common.get_seed", rand.get_seed)
+    py_state, np_state = random.getstate(), np.random.get_state()
+    try:
+        rand.seed_all(1234)
+        k = {}
+        apply_seed(k, "openai", "gpt-4o")
+        assert k == {"seed": 1234}
+    finally:
+        # seed_all() seeds both global generators; leave them as we found them.
+        random.setstate(py_state)
+        np.random.set_state(np_state)

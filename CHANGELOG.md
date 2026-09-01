@@ -9,6 +9,17 @@ and this project adheres (loosely) to [Semantic Versioning](https://semver.org/s
 
 ### Added
 
+- LLM sampling now takes part in negmas's global reproducibility switch. When
+  `NEGMAS_RAND_SEED` is set (or `negmas.helpers.rand.seed_all()` is called),
+  every `litellm.completion` this package makes -- negotiators, meta
+  negotiators, PABLO-ve components and the leakage judge -- carries that seed
+  as its sampling `seed`. With no seed in effect (the default) nothing is sent
+  and requests are byte-for-byte what they were. The parameter is injected only
+  for providers litellm reports as accepting it (Anthropic and Gemini do not),
+  and an explicit `seed` in `llm_kwargs` always wins. Best-effort: providers
+  treat a sampling seed as a hint, so this makes a run more repeatable, not
+  exactly reproducible.
+
 - MCP server (`negmas_llm.mcp`, optional `[mcp]` extra, `negmas-mcp` entry point)
   exposing any registered negmas or negmas-llm negotiator to an MCP client.
   Tools: `list_negotiators`, `describe_negotiator`, `start_negotiation`,

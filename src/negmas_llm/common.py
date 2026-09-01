@@ -1,6 +1,14 @@
 import os
 from typing import Any
 
+try:
+    from negmas.helpers.rand import get_seed
+except ImportError:  # negmas too old to have a global seed; nothing to hook onto
+
+    def get_seed() -> int | None:
+        """No seed is ever in effect on a negmas without `helpers.rand`."""
+        return None
+
 
 def _get_default_model(provider: str, fallback: str) -> str:
     """Get default model for a provider from environment variable or fallback.
@@ -332,6 +340,41 @@ def apply_effort(kwargs: dict[str, Any], effort: str | None) -> None:
     if "reasoning_effort" in kwargs:
         return
     kwargs["reasoning_effort"] = effort
+
+
+def apply_seed(kwargs: dict[str, Any], provider: str, model: str) -> None:
+    """Inject negmas's global seed into ``kwargs`` as the sampling ``seed``.
+
+    Makes an LLM negotiator take part in the single reproducibility switch
+    negmas offers (``NEGMAS_RAND_SEED`` / `negmas.helpers.rand.seed_all`).
+    Nothing is sent unless a seed is actually in effect, so the default -- no
+    seed -- leaves every request byte-for-byte as it was.
+
+    A ``seed`` already present (e.g. via ``llm_kwargs``) wins. Unlike
+    `apply_effort`, the parameter is injected only for providers litellm says
+    accept it (Anthropic and Gemini do not): the seed is set globally for an
+    unrelated purpose, so it must never turn a working call into a provider
+    error. Sampling seeds are best-effort at the provider anyway -- they make
+    a run *more* repeatable, never exactly so.
+    """
+    if "seed" in kwargs:
+        return
+    seed = get_seed()
+    if seed is None:
+        return
+    try:
+        import litellm
+
+        supported = (
+            litellm.get_supported_openai_params(
+                model=model, custom_llm_provider=provider
+            )
+            or ()
+        )
+    except Exception:
+        return
+    if "seed" in supported:
+        kwargs["seed"] = seed
 
 
 def apply_temperature(

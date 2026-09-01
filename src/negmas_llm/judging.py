@@ -25,7 +25,7 @@ from typing import Any
 
 import litellm
 
-from negmas_llm.common import litellm_model_string
+from negmas_llm.common import apply_seed, litellm_model_string
 from negmas_llm.pablove_components import LLMComponent
 
 __all__ = [
@@ -147,6 +147,7 @@ def judge_negotiation_messages(
     user = "This party's own messages, in order:\n\n" + "\n".join(own_messages)
 
     llm_kwargs.setdefault("max_tokens", 1500)
+    apply_seed(llm_kwargs, provider, model)
     try:
         response = litellm.completion(
             model=litellm_model_string(provider, model),

@@ -34,6 +34,7 @@ from negmas.outcomes import ExtendedOutcome
 from negmas_llm.common import (
     apply_effort,
     apply_max_tokens,
+    apply_seed,
     apply_temperature,
     litellm_model_string,
     resolve_max_words,
@@ -436,6 +437,7 @@ class LLMComponent:
         apply_temperature(kwargs, cfg.provider, cfg.model, cfg.temperature)
         apply_max_tokens(kwargs, cfg.provider, cfg.model, cfg.max_tokens)
         apply_effort(kwargs, cfg.effort)
+        apply_seed(kwargs, cfg.provider, cfg.model)
         if cfg.api_key:
             kwargs["api_key"] = cfg.api_key
         if cfg.api_base:

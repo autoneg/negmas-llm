@@ -376,6 +376,27 @@ negotiator = OpenAINegotiator(
 )
 ```
 
+## Reproducibility (`NEGMAS_RAND_SEED`)
+
+negmas has one global switch for reproducible runs: set `NEGMAS_RAND_SEED` to an
+integer (or call `negmas.helpers.rand.seed_all(...)`) and it seeds the `random`
+and `numpy.random` generators. negmas-llm joins that switch: whatever seed is in
+effect is also sent as the sampling `seed` of every LLM call this package makes.
+
+```bash
+export NEGMAS_RAND_SEED=42
+```
+
+Leaving it unset -- the default -- sends nothing, so requests are exactly what
+they were. Two caveats:
+
+- **Not every provider has a sampling seed.** The parameter is sent only to
+  providers litellm reports as accepting it; Anthropic and Gemini, for instance,
+  do not, and calls to them are left untouched rather than made to fail.
+- **A sampling seed is a hint, not a guarantee.** Providers offer it as
+  best-effort, so it makes a run *more* repeatable, not bit-exact. An explicit
+  `seed` in `llm_kwargs` always wins over this one.
+
 ## Ollama server location
 
 `OLLAMA_HOST` (the same variable `ollama serve` reads) selects where the Ollama
