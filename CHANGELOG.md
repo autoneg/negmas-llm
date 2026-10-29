@@ -7,55 +7,46 @@ and this project adheres (loosely) to [Semantic Versioning](https://semver.org/s
 
 ## [Unreleased]
 
-### Added
+## [0.5.0] - 2026-09-02
 
-- LLM sampling now takes part in negmas's global reproducibility switch. When
-  `NEGMAS_RAND_SEED` is set (or `negmas.helpers.rand.seed_all()` is called),
-  every `litellm.completion` this package makes -- negotiators, meta
-  negotiators, PABLO-ve components and the leakage judge -- carries that seed
-  as its sampling `seed`. With no seed in effect (the default) nothing is sent
-  and requests are byte-for-byte what they were. The parameter is injected only
-  for providers litellm reports as accepting it (Anthropic and Gemini do not),
-  and an explicit `seed` in `llm_kwargs` always wins. Best-effort: providers
-  treat a sampling seed as a hint, so this makes a run more repeatable, not
-  exactly reproducible.
-
-- MCP server (`negmas_llm.mcp`, optional `[mcp]` extra, `negmas-mcp` entry point)
-  exposing any registered negmas or negmas-llm negotiator to an MCP client.
-  Tools: `list_negotiators`, `describe_negotiator`, `start_negotiation`,
-  `counter`, `negotiation_state`, `end_negotiation`, `run_negotiation`. Sessions
-  run a real `SAOMechanism` with the caller driving one side, so time-based
-  strategies concede on a genuine schedule rather than against a synthesized
-  state. Serves stdio and streamable-http. This is the mirror of
-  `negmas_llm.ufun_tools`: there the negotiator's LLM calls tools, here the
-  negotiator *is* the tool. Documented in `docs/guide/mcp.md` with a worked
-  step-by-step walkthrough in `docs/guide/mcp-tutorial.md`.
-
-### Changed
-
-- `use_ufun_tools` now defaults to `True` for `LLMNegotiator`, `LLMMetaNegotiator`
-  (and every named wrapper/subclass of both), and every PABLO-ve `LLMComponent`
-  (`LLMOffering`, `LLMAcceptance`, `LLMPerception`, `LLMLanguage`,
-  `LLMUFunModel`, `LLMValidation`, `LLMEnding`). An LLM reasoning about its own
-  utility function from the serialized prompt alone is prone to misreading it
-  -- e.g. defaulting to a "larger number is better" prior on an ordinal-looking
-  issue whose mapping actually runs the other way -- and the tool gives it a
-  way to check instead of guess. Pass `use_ufun_tools=False` to opt out for a
-  provider/model that does not handle tool-calling reliably.
-- PABLO-ve's `LLMComponent` (`negmas_llm.pablove_components`) gained a
-  `use_ufun_tools` field and now offers the same utility-function tools
-  (`negmas_llm.ufun_tools`) that `LLMNegotiator` already did, with the same
-  in-process tool-call round-trip loop (capped at `ufun_tools.MAX_TOOL_ROUNDS`
-  consecutive rounds). Previously only `LLMNegotiator`/`LLMMetaNegotiator`
-  could use these tools; PABLO-ve components had no path to them at all.
-- `OllamaNegotiator` now derives its default `api_base` from the `OLLAMA_HOST`
-  environment variable (host:port, bare host, or full URL), matching how
-  `ollama serve` chooses its listen address. Explicit `api_base` arguments
-  still take precedence; with no env var set, behavior is unchanged
-  (`http://localhost:11434`).
+The headline of this release is **PABLO-ve**, a component architecture that
+generalizes BOA, plus an LLM implementation of every slot in it. Requires
+negmas >= 0.16.0.
 
 ### Added
 
+- **PABLO-ve component architecture** (`negmas_llm.pablove`,
+  `negmas_llm.pablove_components`): Perception, Acceptance, Bidding, Language,
+  Opponent-modeling, plus optional validation and ending. BOA has no slot for
+  understanding what the partner *said*, for deciding to stop, or for producing
+  what we say back; these become ordinary negmas components, inheriting
+  lifecycle callbacks, ufun/NMI sharing and registry support. Every component is
+  optional, which makes the central claim exact and testable: with
+  perception/language/validation/ending absent, `PABLOveNegotiator` produces a
+  trace identical to `make_boa(...)`. Inter-step data flows through a
+  turn-scoped `TurnContext` on the negotiator rather than through component
+  signatures, so existing negmas policies keep working unchanged;
+  `negotiator.shared` holds cross-turn state. `ctx.their_offer` and `ctx.bid`
+  are deliberately separate fields -- negmas' `respond()` passes the partner's
+  offer while `propose()` passes ours. Also adds `TemplateLanguage`
+  (deterministic verbalization, no LLM -- the control that separates "language
+  helps" from "this model's language helps") and `make_pablove`.
+- **An LLM implementation of every BOA and PABLO-ve slot**, so a negotiator can
+  be assembled entirely from LLM components, entirely from classical ones, or
+  any mixture: `LLMOffering`, `LLMAcceptance`, `LLMUFunModel` (a
+  text-conditioned opponent model -- unlike a frequency model it can use what
+  the partner said, not only what they offered), `LLMPerception`, `LLMLanguage`,
+  `LLMValidation`, `LLMEnding`. Each component resolves its configuration on
+  its own class name, so components route independently
+  (`NEGMAS_LLM_LLMOffering_MODEL=<big>` alongside
+  `NEGMAS_LLM_LLMPerception_MODEL=<small>`). Every component enforces the
+  invariants the LLM cannot be trusted with and counts each intervention:
+  `snap_outcome()` repairs near-miss outcomes rather than discarding them,
+  offering/acceptance refuse outcomes at or below the reserved value,
+  `LLMEnding` will not walk away from an offer that already beats no deal, and
+  `LLMUFunModel` scores 0 before its first estimate. Also adds
+  `outcome_space_of()`, since components that consult only the NMI see nothing
+  outside a live negotiation.
 - Composable PABLO-ve slots: `Perception`, `Language`, `Validation` and
   `Ending` components now support `a | b | c`, producing a `PerceptionChain`,
   `LanguageChain`, `ValidationChain` or `EndingChain` that fills the slot as a
@@ -82,6 +73,112 @@ and this project adheres (loosely) to [Semantic Versioning](https://semver.org/s
   New public helpers: `make_component`, `component_leaves`,
   `resolve_component_type`, and the `ComponentSpec` alias documenting the
   grammar.
+- `LLMComponent.memory_mode` with three strategies for how a PABLO-ve component
+  learns the negotiation's setup and history, selectable per component or
+  uniformly via `PABLOveNegotiator(memory_mode=...)`: `"none"` (a fresh,
+  memoryless completion every call -- the previous behavior), `"conversation"`
+  (the new default: each component keeps its own persistent chat, seeded once
+  through the same preferences template and tag renderer `LLMNegotiator` uses)
+  and `"shared"` (the setup cached once on `PABLOveNegotiator.memory` and pulled
+  fresh into each per-call message). Every mode except `"none"` also gets a
+  short "team briefing" in its system prompt, since a component that does not
+  know it is one part of a pipeline tends to over-explain or second-guess
+  decisions made elsewhere.
+- Opt-in conversation summarizer (`negmas_llm.summarize.maybe_summarize`) for
+  `LLMNegotiator` and for `LLMComponent`'s `"conversation"` mode, bounding token
+  growth in long negotiations: `summarize_every` (exchange count) and
+  `summarize_over_chars` (total conversation length) both default to disabled,
+  either trigger firing is enough, and everything older than `summarize_keep`
+  exchanges collapses into one LLM-generated summary. Never wall-clock time.
+  `LLMMetaNegotiator` is not wired up -- it has no persistent conversation to
+  summarize.
+- In-process ufun tool-calling (`negmas_llm.ufun_tools`): OpenAI/litellm-style
+  function-tool specs and a dispatcher covering `evaluate_utility`,
+  `utility_min`/`utility_max`, `best_outcome`/`worst_outcome`, `reserved_value`
+  and the inverter operations
+  `invert_some`/`invert_all`/`invert_one_in`/`invert_best_in`/`invert_worst_in`,
+  so the LLM can compute exact utilities instead of estimating them from the
+  prompt. No server, transport or MCP layer involved. Available to
+  `LLMNegotiator`, `LLMMetaNegotiator` and every PABLO-ve `LLMComponent` through
+  `use_ufun_tools`, with one shared call/tool-round-trip loop
+  (`ufun_tools.run_llm_call`, capped at `ufun_tools.MAX_TOOL_ROUNDS`).
+- MCP server (`negmas_llm.mcp`, optional `[mcp]` extra, `negmas-mcp` entry point)
+  exposing any registered negmas or negmas-llm negotiator to an MCP client.
+  Tools: `list_negotiators`, `describe_negotiator`, `start_negotiation`,
+  `counter`, `negotiation_state`, `end_negotiation`, `run_negotiation`. Sessions
+  run a real `SAOMechanism` with the caller driving one side, so time-based
+  strategies concede on a genuine schedule rather than against a synthesized
+  state. Serves stdio and streamable-http. This is the mirror of
+  `negmas_llm.ufun_tools`: there the negotiator's LLM calls tools, here the
+  negotiator *is* the tool. Documented in `docs/guide/mcp.md` with a worked
+  step-by-step walkthrough in `docs/guide/mcp-tutorial.md`.
+- LLM-as-judge scoring (`negmas_llm.judging`): `judge_negotiation_messages`
+  scores one party's own messages on `score_leakage` (did its words reveal
+  private preference information) and `format_compliance`, via a single
+  `litellm.completion` call with a fixed judge system prompt;
+  `describe_private_info` formats a ufun's issue weights for that prompt. Takes
+  primitive arguments rather than any downstream project's negotiation-context
+  type, so this package has no dependency on its consumers.
+- Single source of truth for LLM configuration (`negmas_llm.config`): every
+  negotiator, meta negotiator and component resolves its
+  provider/model/effort/etc. in one place, driven by environment variables so
+  experiments can switch models without code changes. Three configuration axes
+  (per-provider, global `NEGMAS_LLM_<VAR>`, per-type
+  `NEGMAS_LLM_<ClassName>_<VAR>`) with precedence explicit > per-type > global >
+  built-in default, and two coherence rules that keep a model off the wrong
+  provider. Adds **model types** (tiers): `resolve_llm_config(model_type="fast")`
+  appends the uppercased tier as an env-var suffix, so different parts of one
+  negotiator can request different (provider, model, effort) bundles; `_call_llm`
+  gained a `model_type` parameter. `effort` is plumbed to litellm as
+  `reasoning_effort`. Historical defaults are unchanged.
+- Per-call token usage and response-time tracking: `TokenUsage`, a cumulative
+  accumulator (prompt/completion/total tokens, wall-clock seconds, call count)
+  fed from litellm's `response.usage` at every call site. Read it off
+  `.token_usage` on any negotiator or component after a negotiation.
+- Recommender mode for `LLMMetaNegotiator` via `enforce_base_offer` /
+  `enforce_base_response`: when `False`, the base negotiator's output is a
+  *recommendation* -- the LLM picks the outcome and response, falling back to
+  the base proposal whenever its choice is unparseable or not a valid outcome,
+  so agreements stay structurally valid either way. Adds
+  `LLMNegotiatorWithRecommender`, which presents several sub-negotiators'
+  proposals to the LLM as candidate recommendations.
+- Mechanism-limit awareness: `TurnContext` now carries `n_steps`/`time_limit`
+  from the NMI alongside `step`/`relative_time`, and a new
+  `common.time_status()` states what `relative_time` means (0% = start, 100% =
+  deadline) together with the actual step/time limits (treating negmas's
+  infinite `time_limit` as unlimited). Sent by default from every PABLO-ve
+  component, `LLMMetaNegotiator`, and the older BOA-style components.
+- Prompt tags `{{annotation}}` (the mechanism's shared
+  `negotiator.nmi.annotation`) and `{{private-annotation}}` (this negotiator's
+  own `annotation`/`private_info`, with the internal `opponent_ufun` key
+  filtered out so it never leaks). Both are self-contained blocks that render as
+  an empty string when there is nothing to show, and both support dotted-path
+  access (`{{annotation.<key>}}`).
+- `describe_reserved_value()`, the single canonical phrasing of what a reserved
+  value *is* -- the payoff on no agreement, not merely a floor to obey -- routed
+  through every prompt site: the `{{reserved-value}}` tag, the linear-additive
+  ufun renderer, `LLMNegotiator`'s preferences/system/start prompts,
+  `format_own_ufun`/`format_partner_ufun`, `LLMComponent`, and the PABLO-ve
+  offering/acceptance prompts. On scenarios where every reserved value is 0.0
+  this is invisible; with per-party sampled reservations it is the whole game.
+- `max_words` (env `NEGMAS_LLM_MAX_WORDS`, default 60) and
+  `word_limit_instruction`: response length is now bounded by a word budget
+  stated in the prompt rather than by a token cap, because reasoning models
+  spend hidden deliberation against the same output budget as the visible answer.
+- LLM sampling now takes part in negmas's global reproducibility switch. When
+  `NEGMAS_RAND_SEED` is set (or `negmas.helpers.rand.seed_all()` is called),
+  every `litellm.completion` this package makes -- negotiators, meta
+  negotiators, PABLO-ve components and the leakage judge -- carries that seed
+  as its sampling `seed`. With no seed in effect (the default) nothing is sent
+  and requests are byte-for-byte what they were. The parameter is injected only
+  for providers litellm reports as accepting it (Anthropic and Gemini do not),
+  and an explicit `seed` in `llm_kwargs` always wins. Best-effort: providers
+  treat a sampling seed as a hint, so this makes a run more repeatable, not
+  exactly reproducible.
+- `PABLOveNegotiator.opponent_model`, delegating to the `opponent_ufun` the base
+  `Negotiator` already exposes, so negmas policies that read a differently-named
+  attribute (e.g. `NiceTitForTatOfferingPolicy`) can be dropped into a
+  PABLO-ve slot without a silent fallback.
 - `LLMLanguage` now includes any existing draft (`ctx.utterance`) in its prompt
   and asks the model to improve it, so it works as a later link in a
   `LanguageChain` without any chain-specific code. A lone `LLMLanguage` always
@@ -93,6 +190,95 @@ and this project adheres (loosely) to [Semantic Versioning](https://semver.org/s
   negotiator routes to `https://ollama.com` instead of a local server.
 - `DashScopeNegotiator` for Alibaba DashScope (Qwen) models, reading
   `DASHSCOPE_API_KEY` from the environment.
+- Pre-commit hooks (the same pre-commit-hooks/ruff/ruff-format/blacken-docs
+  suite negmas itself uses) now run on every commit.
+
+### Changed
+
+- **Minimum negmas version is now 0.16.0** (was 0.15.2). 0.16.0 reworked ufun
+  inversion (`negmas.preferences.inv_ufun` is now a package of inverters and
+  `ufun.invert()` returns an adaptive inverter that picks the best one for the
+  ufun), which `negmas_llm.ufun_tools` depends on directly.
+- `use_ufun_tools` now defaults to `True` for `LLMNegotiator`, `LLMMetaNegotiator`
+  (and every named wrapper/subclass of both), and every PABLO-ve `LLMComponent`
+  (`LLMOffering`, `LLMAcceptance`, `LLMPerception`, `LLMLanguage`,
+  `LLMUFunModel`, `LLMValidation`, `LLMEnding`). An LLM reasoning about its own
+  utility function from the serialized prompt alone is prone to misreading it
+  -- e.g. defaulting to a "larger number is better" prior on an ordinal-looking
+  issue whose mapping actually runs the other way -- and the tool gives it a
+  way to check instead of guess. Pass `use_ufun_tools=False` to opt out for a
+  provider/model that does not handle tool-calling reliably.
+- `temperature` and `max_tokens` now default to `None` on `LLMNegotiator`,
+  `LLMMetaNegotiator` and the components, and a model-appropriate value is
+  resolved at call time: reasoning models get a larger budget (8192) so hidden
+  deliberation cannot starve the visible response, classic instruct models keep
+  1024, and OpenAI reasoning models omit `temperature` entirely (they reject
+  non-defaults). Explicit constructor/per-call values and `llm_kwargs` aliases
+  still win. Overridable via `NEGMAS_LLM_DEFAULT_MAX_TOKENS` /
+  `NEGMAS_LLM_DEFAULT_TEMPERATURE`. Adds `is_reasoning_model`,
+  `default_*`/`resolve_*` and `apply_temperature` helpers.
+- The truncation/depth limits every PABLO-ve component applies to its prompt
+  (`text_limit`, `history_turns`, `history_offers`, `domain_values_limit`) are
+  now per-component `attrs` fields on `LLMComponent` rather than hardcoded
+  constants, so they can be tuned per negotiator/component.
+- `OllamaNegotiator` now derives its default `api_base` from the `OLLAMA_HOST`
+  environment variable (host:port, bare host, or full URL), matching how
+  `ollama serve` chooses its listen address. Explicit `api_base` arguments
+  still take precedence; with no env var set, behavior is unchanged
+  (`http://localhost:11434`).
+- The standalone "Your reserved value follows." section is gone from the default
+  preferences prompt -- `{{utility-function:text}}` already ends with the full
+  explanation, and keeping both rendered the same paragraph twice.
+
+### Fixed
+
+- `_format_linear_additive_ufun` renders both the reader's own ufun *and* the
+  opponent's but hard-coded first-person wording, so an opponent-model
+  negotiator was told "Your reserved value ... NEVER accept or offer anything at
+  or below this value" about the **opponent's** number -- substituting the
+  opponent's walk-away point for its own. It now takes an `own` flag and
+  attributes the value to the right party.
+- `LLMMetaNegotiator` never learned its own reserved value at all: it has no
+  `on_preferences_changed` hook, so it never rendered the preferences prompt, and
+  its LLM saw the concept only in rules telling it to keep the value secret.
+  This matters most on the override path (`enforce_base_response=False`), where
+  the LLM can accept a deal the base strategy would have refused. Both the
+  decision prompts and the text-generation prompt now carry it.
+- `{{opponent-utility-function}}` returned the non-empty string "Opponent
+  utility function unknown", so the preferences prompt's static "The opponent's
+  utility function follows." heading always appeared even with no opponent ufun
+  known. The heading now lives inside the tag's own output.
+- `PABLOveNegotiator.respond` reported `their_offer`/`their_data` as always
+  `None`: `GBState` has no `current_offer` attribute, and under the
+  `SAOMechanism` compatibility shim `state.threads` ends up empty entirely, so
+  the offer and data are now rescued from the raw `SAOState` before the shim
+  drops them. `LLMPerception` had the same broken lookup.
+- `TurnContext.history` stored a fresh tuple copy of every prior turn on each
+  new turn (O(n) per turn, O(n^2) over a negotiation). It is now a lazy view
+  over the negotiator's shared, growing turn list.
+- Three of six PABLO-ve components (`LLMOffering`, `LLMAcceptance`,
+  `LLMEnding`) surfaced the opponent's offer but not their words, and
+  `LLMLanguage`/`LLMUFunModel` dropped the text entirely when no `Perception`
+  component was configured. Every component now sees both the opponent's outcome
+  and their text.
+- `PABLOveNegotiator.opponent_model` returned `self._models[0]` verbatim,
+  duplicating the mechanism instead of reusing it and dropping
+  `MAPNegotiator`'s own `UFunModel` type-filtering; it now delegates to
+  `opponent_ufun`.
+- `summarize_every`/`summarize_over_chars` used a `bool(...)` disable check,
+  silently conflating a `0` threshold with "disabled".
+- `LLMMetaNegotiator._build_system_prompt` now returns a custom system prompt
+  untouched, with the word-budget instruction appended at LLM-call time (matching
+  `LLMNegotiator`).
+- `negmas_llm.ufun_tools` against negmas >= 0.16.0, whose inverters *clamp*
+  (returning the nearest achievable outcome for a range that holds none) and
+  whose default inverter no longer implements `all()`. `invert_all` falls back to
+  the equivalent strict scan when `all()` is absent, and
+  `invert_one_in`/`invert_best_in`/`invert_worst_in` keep their documented
+  contract of a null answer for an empty range.
+- A ufun tool for the reserved value: none of the existing tools exposed it, yet
+  `invert_some`'s `normalized` flag is documented as being relative to it.
+
 
 ## [0.4.3] - 2026-05-14
 

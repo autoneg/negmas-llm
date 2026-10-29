@@ -289,6 +289,44 @@ UFUN_TOOL_SPECS: list[dict[str, Any]] = [
 ]
 
 
+def _all_in_range(
+    inverter: Any,
+    rng: tuple[float, float],
+    normalized: bool,
+    outcome_space: OutcomeSpace | None,
+) -> list[Outcome]:
+    """Every outcome whose utility falls in *rng*.
+
+    ``all()`` exists only on the enumerating inverters; the inverter negmas
+    hands back from ``ufun.invert()`` may delegate to an approximate one that
+    does not have it. ``some()`` with no ``n`` is the same strict scan on a
+    discrete space, so it stands in when ``all()`` is missing.
+    """
+    all_in = getattr(inverter, "all", None)
+    if all_in is not None:
+        return list(all_in(rng, normalized))
+    if outcome_space is not None and not outcome_space.is_discrete():
+        raise ValueError(
+            "Cannot find all outcomes in a range for a continuous outcome space "
+            "(there is in general an infinite number of them)"
+        )
+    return list(inverter.some(rng, normalized))
+
+
+def _has_any_in_range(
+    inverter: Any, rng: tuple[float, float], normalized: bool
+) -> bool:
+    """Whether any outcome's utility actually falls inside *rng*.
+
+    negmas >= 0.16 inverters *clamp*: ``one_in``/``best_in``/``worst_in``
+    return the nearest achievable outcome when the requested range holds none,
+    so a negotiator never stalls. These tools promise the LLM a null answer for
+    an empty range instead, so the range is tested first -- ``some()`` is the
+    strict scan and never clamps.
+    """
+    return bool(inverter.some(rng, normalized, n=1))
+
+
 def run_ufun_tool(
     ufun: BaseUtilityFunction, name: str, arguments: dict[str, Any]
 ) -> dict[str, Any]:
@@ -352,7 +390,7 @@ def run_ufun_tool(
                     "count": len(outcomes),
                 }
             if name == "invert_all":
-                outcomes = inverter.all(rng, normalized)  # type: ignore[attr-defined]
+                outcomes = _all_in_range(inverter, rng, normalized, outcome_space)
                 truncated = len(outcomes) > _MAX_OUTCOMES
                 outcomes = outcomes[:_MAX_OUTCOMES]
                 return {
@@ -360,8 +398,18 @@ def run_ufun_tool(
                     "count": len(outcomes),
                     "truncated": truncated,
                 }
+            if not _has_any_in_range(inverter, rng, normalized):
+                return _with_utility(None, ufun)
             if name == "invert_one_in":
-                return _with_utility(inverter.one_in(rng, normalized), ufun)
+                return _with_utility(
+                    inverter.one_in(
+                        rng,
+                        normalized,
+                        fallback_to_higher=False,
+                        fallback_to_best=False,
+                    ),
+                    ufun,
+                )
             if name == "invert_best_in":
                 return _with_utility(inverter.best_in(rng, normalized), ufun)
             return _with_utility(inverter.worst_in(rng, normalized), ufun)

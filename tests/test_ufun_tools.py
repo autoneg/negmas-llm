@@ -124,6 +124,35 @@ class TestRunUfunToolDirect:
         assert best_in["utility"] <= 0.6 + 1e-9
         assert worst_in["utility"] >= 0.4 - 1e-9
 
+    def test_invert_best_worst_in_return_none_when_unsatisfiable(self, small_ufun):
+        """negmas >= 0.16 inverters clamp to the nearest achievable outcome for
+        an empty range; the tools keep promising a null answer instead.
+        """
+        for name in ("invert_best_in", "invert_worst_in"):
+            result = run_ufun_tool(
+                small_ufun,
+                name,
+                {"min_utility": 1.5, "max_utility": 2.0, "normalized": True},
+            )
+            assert result["outcome"] is None, name
+            assert result["utility"] is None, name
+
+    def test_invert_all_on_a_continuous_outcome_space_errors(self):
+        """Listing every outcome in a range is meaningless for a continuous
+        space, so the tool reports an error rather than an arbitrary subset.
+        """
+        outcome_space = make_os([make_issue((0.0, 1.0), name="price")])
+        ufun = LUFun(
+            values={"price": lambda x: x},
+            weights={"price": 1.0},
+            outcome_space=outcome_space,
+            reserved_value=0.0,
+        )
+        result = run_ufun_tool(
+            ufun, "invert_all", {"min_utility": 0.0, "max_utility": 1.0}
+        )
+        assert "error" in result
+
     def test_unknown_tool_name(self, small_ufun):
         result = run_ufun_tool(small_ufun, "not_a_real_tool", {})
         assert "error" in result
