@@ -75,7 +75,7 @@ def _coerce(issue: Issue, value: Any) -> Any:
     JSON object keys are always strings, so ``{"100": 0.5}`` on an int issue must
     be matched back to ``100``.
     """
-    if issue.is_discrete():
+    if issue.is_finite():
         allowed = list(issue.all)
         if value in allowed:
             return value
@@ -119,16 +119,16 @@ def build_ufun(
     for name, issue in issues.items():
         entry = raw_values.get(name)
         if entry is None:
-            if not issue.is_discrete():
-                raise ScenarioError(f"issue {name!r} is continuous and needs 'values'")
+            if not issue.is_finite():
+                raise ScenarioError(f"issue {name!r} is infinite and needs 'values'")
             allowed = list(issue.all)
             span = max(len(allowed) - 1, 1)
             values[name] = {v: i / span for i, v in enumerate(allowed)}
             continue
         if isinstance(entry, list):
-            if not issue.is_discrete():
+            if not issue.is_finite():
                 raise ScenarioError(
-                    f"issue {name!r} is continuous; give 'values' as a mapping"
+                    f"issue {name!r} is infinite; give 'values' as a mapping"
                 )
             allowed = list(issue.all)
             if len(entry) != len(allowed):
@@ -198,7 +198,7 @@ def describe_outcome_space(outcome_space: CartesianOutcomeSpace) -> dict[str, An
     issues: list[dict[str, Any]] = []
     for issue in outcome_space.issues:
         entry: dict[str, Any] = {"name": issue.name, "type": type(issue).__name__}
-        if issue.is_discrete():
+        if issue.is_finite():
             entry["values"] = list(issue.all)
         else:
             entry["range"] = {"min": issue.min_value, "max": issue.max_value}

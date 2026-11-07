@@ -305,9 +305,9 @@ def _all_in_range(
     all_in = getattr(inverter, "all", None)
     if all_in is not None:
         return list(all_in(rng, normalized))
-    if outcome_space is not None and not outcome_space.is_discrete():
+    if outcome_space is not None and not outcome_space.is_finite():
         raise ValueError(
-            "Cannot find all outcomes in a range for a continuous outcome space "
+            "Cannot find all outcomes in a range for an infinite outcome space "
             "(there is in general an infinite number of them)"
         )
     return list(inverter.some(rng, normalized))
