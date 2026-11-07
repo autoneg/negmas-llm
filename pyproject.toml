@@ -24,7 +24,7 @@ classifiers = [
 keywords = ["negotiation", "llm", "agents", "ai", "negmas"]
 dependencies = [
     "litellm>=1.80.11",
-    "negmas>=0.16.0",
+    "negmas>=0.17.0",
     "rich>=13.0.0",
 ]
 
